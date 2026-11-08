@@ -1,0 +1,14 @@
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\bin\Release\RaceDisplay.deps.json
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\bin\Release\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\bin\Release\RaceDisplay.pdb
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\bin\Release\0Harmony.dll
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.AssemblyReference.cache
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.GeneratedMSBuildEditorConfig.editorconfig
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfoInputs.cache
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfo.cs
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.CoreCompileInputs.cache
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisp.370C6E72.Up2Date
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\refint\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.pdb
+F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\ref\RaceDisplay.dll

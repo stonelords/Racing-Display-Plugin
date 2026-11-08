@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <AssemblyName>RaceDisplay</AssemblyName>
+    <RootNamespace>RaceDisplay</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+
+    <!--
+      Game2Bin = the game's "Game2" folder (the one with Game2.Client.dll). Found in this order:
+        1. dotnet build -p:Game2Bin="D:\...\SpaceEngineers2\Game2"
+        2. the SE2_GAME2 environment variable
+        3. automatically, from Steam: every Steam library folder is checked (see FindGame2 below)
+      Only needed to BUILD the plugin; players just copy the DLLs.
+    -->
+    <Game2Bin Condition="'$(Game2Bin)' == '' and '$(SE2_GAME2)' != ''">$(SE2_GAME2)</Game2Bin>
+  </PropertyGroup>
+
+  <!-- ===================================================================================
+       Find the game if Game2Bin wasn't given:
+        1. Steam's own library list: Steam's folder comes from the registry, and
+           steamapps\libraryfolders.vdf lists every library (other drives included).
+        2. Fallback: the usual Steam folders on every drive letter C-Z.
+       Each candidate is checked for steamapps\common\SpaceEngineers2\Game2\Game2.Client.dll.
+       =================================================================================== -->
+  <Target Name="FindGame2" Condition="'$(Game2Bin)' == ''">
+    <PropertyGroup>
+      <_SteamPath>$([MSBuild]::GetRegistryValueFromView('HKEY_CURRENT_USER\Software\Valve\Steam', 'SteamPath', null, RegistryView.Default))</_SteamPath>
+      <_SteamPath Condition="'$(_SteamPath)' == ''">$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam', 'InstallPath', null, RegistryView.Registry64))</_SteamPath>
+      <_SteamPath Condition="'$(_SteamPath)' == ''">C:\Program Files (x86)\Steam</_SteamPath>
+      <_SteamPath>$(_SteamPath.Replace('/', '\'))</_SteamPath>
+      <_LibVdf>$(_SteamPath)\steamapps\libraryfolders.vdf</_LibVdf>
+    </PropertyGroup>
+
+    <!-- 1. Steam library list: keep lines like   "path"   "E:\\SteamLibrary"   -->
+    <ReadLinesFromFile File="$(_LibVdf)" Condition="Exists('$(_LibVdf)')">
+      <Output TaskParameter="Lines" ItemName="_VdfLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_VdfPathLine Include="@(_VdfLine)" Condition="$([System.String]::Copy('%(_VdfLine.Identity)').Contains('&quot;path&quot;'))" />
+      <_SteamLibrary Include="$(_SteamPath)" />
+      <_SteamLibrary Include="$([System.Text.RegularExpressions.Regex]::Replace('%(_VdfPathLine.Identity)', '^\s*&quot;path&quot;\s*&quot;(.*)&quot;\s*$', '$1').Replace('\\', '\'))"
+                     Condition="'@(_VdfPathLine)' != ''" />
+    </ItemGroup>
+
+    <!-- 2. Usual Steam folders on every drive -->
+    <ItemGroup>
+      <_Drive Include="C;D;E;F;G;H;I;J;K;L;M;N;O;P;Q;R;S;T;U;V;W;X;Y;Z" />
+      <_SteamLibrary Include="@(_Drive->'%(Identity):\SteamLibrary');@(_Drive->'%(Identity):\Steam');@(_Drive->'%(Identity):\SteamGames');@(_Drive->'%(Identity):\Games\Steam');@(_Drive->'%(Identity):\Games\SteamLibrary');@(_Drive->'%(Identity):\Program Files (x86)\Steam');@(_Drive->'%(Identity):\Program Files\Steam')" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <_Game2Client Include="%(_SteamLibrary.Identity)\steamapps\common\SpaceEngineers2\Game2\Game2.Client.dll"
+                    Condition="Exists('%(_SteamLibrary.Identity)\steamapps\common\SpaceEngineers2\Game2\Game2.Client.dll')" />
+    </ItemGroup>
+
+    <PropertyGroup>
+      <Game2Bin Condition="'@(_Game2Client)' != ''">$([System.IO.Path]::GetDirectoryName('%(_Game2Client.FullPath)'))</Game2Bin>
+    </PropertyGroup>
+
+    <Message Importance="high" Text="Steam folder: $(_SteamPath)  (library list $(_LibVdf) found: $([System.IO.File]::Exists('$(_LibVdf)')))" />
+    <Message Importance="high" Condition="'@(_VdfPathLine)' != ''" Text="Steam library list: @(_VdfPathLine, ' | ')" />
+    <Message Importance="high" Condition="'$(Game2Bin)' != ''" Text="Space Engineers 2 found: $(Game2Bin)" />
+  </Target>
+
+  <!-- ===================================================================================
+       Reference the game's assemblies from Game2Bin (compile only; never copied to the output).
+       =================================================================================== -->
+  <Target Name="AddGameReferences" DependsOnTargets="FindGame2" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(Game2Bin)' == '' or !Exists('$(Game2Bin)\Game2.Client.dll')"
+           Text="Couldn't find Space Engineers 2 (Game2.Client.dll). Tell the build where it is: dotnet build -p:Game2Bin=&quot;D:\...\SpaceEngineers2\Game2&quot;   or set the SE2_GAME2 environment variable to that folder." />
+
+    <ItemGroup>
+      <_GameDll Include="$(Game2Bin)\Game2*.dll;$(Game2Bin)\VRage*.dll"
+                Exclude="$(Game2Bin)\*.Native.dll;$(Game2Bin)\* - Copy*.dll;$(Game2Bin)\*Test*.dll;$(Game2Bin)\*Editor*.dll;$(Game2Bin)\*ContentBuilder*.dll;$(Game2Bin)\*ContentPipeline*.dll;$(Game2Bin)\*Generator*.dll;$(Game2Bin)\*Analyzer*.dll" />
+      <!-- The game's UI framework, for the HUD overlay. -->
+      <_GameDll Include="$(Game2Bin)\Avalonia.Base.dll;$(Game2Bin)\Avalonia.Controls.dll" />
+      <Reference Include="@(_GameDll)" Private="false" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Harmony (supports .NET 9). 0Harmony.dll is copied next to RaceDisplay.dll;
+       keep the two together, because the game loads it from the plugin's folder. -->
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+  </ItemGroup>
+
+</Project>
