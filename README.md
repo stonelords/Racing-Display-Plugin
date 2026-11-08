@@ -229,5 +229,3 @@ SE2 has a built-in plugin loader (`Keen.VRage.Core.Plugins.PluginHost`).
 - **Gate is shared across worlds**: the world-load patch didn't fire. The plugin falls back to a single "default" world and still works.
 
 **Game options followed:** speeds (results, splits, records, crash messages) use the speed unit set in the game's Options > Interface (m/s, km/h or mph); the crash settings stay in m/s. The race panels' background uses the game's UI background opacity unless you turn off Settings > Display > Panel darkness: use the game's.
-"# SE2-Race-Display-Plugin" 
-"# SE2-Race-Display-Plugin" 

@@ -63,6 +63,16 @@ namespace RaceDisplay
             return true;
         }
 
+        /// <summary>The save has been written: put the race course in it straight away (publishing uploads the save
+        /// right after saving, so a later write would miss the Workshop copy).</summary>
+        internal static Action OnWorldSaveCompleted;
+        private static void WorldSaveCompletedPostfix()
+        {
+            System.Threading.Interlocked.Increment(ref WorldSaves);
+            try { OnWorldSaveCompleted?.Invoke(); }
+            catch (Exception e) { PluginLog.Error("World save: writing the race course failed", e); }
+        }
+
         private static void WorldSavePostfix() => System.Threading.Interlocked.Increment(ref WorldSaves);
 
         public static void Apply(Harmony harmony)
@@ -127,7 +137,7 @@ namespace RaceDisplay
             // The game saving the world: the race course is written into the save folder then.
             var saveComp = AccessTools.TypeByName("Keen.Game2.Simulation.RuntimeSystems.Saves.SaveSessionComponent");
             Patch(harmony, saveComp == null ? null : AccessTools.Method(saveComp, "Serialize"), nameof(WorldSavePostfix), "SaveSessionComponent.Serialize (world save)");
-            Patch(harmony, saveComp == null ? null : AccessTools.Method(saveComp, "NotifyClientSaveCompletedAsync"), nameof(WorldSavePostfix), "SaveSessionComponent.NotifyClientSaveCompletedAsync (world saved)");
+            Patch(harmony, saveComp == null ? null : AccessTools.Method(saveComp, "NotifyClientSaveCompletedAsync"), nameof(WorldSaveCompletedPostfix), "SaveSessionComponent.NotifyClientSaveCompletedAsync (world saved)");
             Patch(harmony, vmType == null ? null : AccessTools.Method(vmType, "SaveGameInternal"), nameof(WorldSavePostfix), "InGameMenuScreenViewModel.SaveGameInternal (save from the menu)");
 
             // Esc during a replay ends the replay instead of opening the pause menu.

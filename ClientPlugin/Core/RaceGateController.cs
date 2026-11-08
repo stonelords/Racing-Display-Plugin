@@ -81,6 +81,21 @@ namespace RaceDisplay.Core
         private volatile bool escapeStop;
 
         /// <summary>The game is about to open the pause menu (Esc). During a replay: end the replay instead.</summary>
+        /// <summary>
+        /// The game has just written the world save (called from the save's own thread): write the race course into it
+        /// now, before anything (like publishing to the Workshop) copies the save.
+        /// </summary>
+        public void WorldSaveCompleted()
+        {
+            lock (worldFileLock)
+            {
+                if (!worldCoursesChecked) return;   // this world's courses weren't read yet: don't overwrite them
+                SaveCoursesToWorld(true);
+                keepWrittenUntil = Environment.TickCount64 + 60000;
+            }
+        }
+        private readonly object worldFileLock = new object();
+
         public bool EscapePressed()
         {
             if (!replaying) return false;
@@ -1744,7 +1759,7 @@ namespace RaceDisplay.Core
             if (worldWriteDueAt != 0 && now >= worldWriteDueAt)
             {
                 worldWriteDueAt = 0;
-                if (worldCoursesChecked) SaveCoursesToWorld(true);   // not before this world's own courses were read
+                if (worldCoursesChecked) lock (worldFileLock) SaveCoursesToWorld(true);   // not before this world's own courses were read
                 keepWrittenUntil = now + 60000;
             }
             if (writtenJson == null || now > keepWrittenUntil || now - worldFileCheckedAt < 2000) return;
@@ -1780,6 +1795,12 @@ namespace RaceDisplay.Core
             worldCoursesChecked = true;
             bool haveCourse = timer.Gate != null || timer.Checkpoints.Count > 0;   // made one already while we looked
             var wc = GateSettings.WorldCourses.Load(folder);
+            bool fromWorkshop = false;
+            if (wc == null && !haveCourse)
+            {
+                wc = FindWorkshopCourse();
+                fromWorkshop = wc != null;
+            }
             if (wc != null)
             {
                 MergeWorldCourses(wc);
@@ -1788,8 +1809,38 @@ namespace RaceDisplay.Core
                     ApplyCourse(wc.Current);
                     RaceNotify($"Race course '{wc.Current.Name ?? "course"}' loaded from this world ({timer.Checkpoints.Count} checkpoints)", HudColor.Cyan);
                 }
+                // Came from the Workshop download: keep it in this world's own save from now on.
+                if (fromWorkshop) SaveCoursesToWorld(true);
                 return;
             }
+        }
+
+        /// <summary>
+        /// A world made from a Workshop download has no RaceDisplayCourses.json (the game doesn't copy it into the new
+        /// save), but the download does. Look through the downloads for the course whose gates and checkpoints sit on
+        /// this world's grids.
+        /// </summary>
+        private GateSettings.WorldCourses FindWorkshopCourse()
+        {
+            try
+            {
+                var files = WorkshopCourses.FindFiles();
+                if (files.Count == 0) return null;
+                var grids = game.FindNamedGrids(_ => true, false);
+                GateSettings.WorldCourses best = null;
+                double bestFit = 0;
+                string bestFile = null;
+                foreach (var f in files)
+                {
+                    var wc = GateSettings.WorldCourses.Load(Path.GetDirectoryName(f));
+                    if (wc?.Current == null) continue;
+                    double fit = WorkshopCourses.Fit(wc.Current, grids);
+                    if (fit > bestFit) { bestFit = fit; best = wc; bestFile = f; }
+                }
+                PluginLog.Info($"Workshop courses: {files.Count} file(s) found, best fit {bestFit:P0}{(bestFile != null ? " (" + bestFile + ")" : "")}");
+                return bestFit >= 0.5 ? best : null;
+            }
+            catch (Exception e) { PluginLog.Error("Workshop courses: search failed", e); return null; }
         }
 
         /// <summary>Adds the world file's named courses to your saved courses (keeps yours when the name is taken).</summary>

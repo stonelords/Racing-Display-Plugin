@@ -29,6 +29,7 @@ namespace RaceDisplay
 
             Patches.OnFrame = OnFrame;
             Patches.OnPauseMenuRequested = controller.EscapePressed;
+            Patches.OnWorldSaveCompleted = controller.WorldSaveCompleted;
             harmony = new Harmony("RaceDisplay");
             Patches.Apply(harmony);
             HelpScreenPage.Apply(harmony);
