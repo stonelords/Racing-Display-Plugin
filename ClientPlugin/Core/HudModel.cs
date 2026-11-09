@@ -43,11 +43,13 @@ namespace RaceDisplay.Core
         {
             public double Size;                 // pixels at HUD scale 1
             public string StaticSig;            // changes when the route / lines change (they're redrawn then)
-            public readonly List<(double X, double Y)> Route = new List<(double, double)>();
-            public readonly List<(double X, double Y)> Line = new List<(double, double)>();
-            public readonly List<(double X, double Y)> Line2 = new List<(double, double)>();
+            // Route, lines, line colours and sectors only change with the course: the same lists are handed on
+            // every frame (until StaticSig changes), so they must not be changed once made.
+            public List<(double X, double Y)> Route = new List<(double, double)>();
+            public List<(double X, double Y)> Line = new List<(double, double)>();
+            public List<(double X, double Y)> Line2 = new List<(double, double)>();
             public HudColor LineColour = HudColor.Purple;
-            public readonly List<HudColor> LineColours = new List<HudColor>();   // per segment of Line (racing line colours); empty = LineColour
+            public List<HudColor> LineColours = new List<HudColor>();   // per segment of Line (racing line colours); empty = LineColour
             public readonly List<(double X, double Y, HudColor Colour, bool Gate, string Label)> Points = new List<(double, double, HudColor, bool, string)>();
             public readonly List<(double X, double Y, HudColor Colour)> Ghosts = new List<(double, double, HudColor)>();
             public double? PlayerX, PlayerY;
@@ -55,7 +57,7 @@ namespace RaceDisplay.Core
             public int NextIndex = -1;          // Points index of the gate / checkpoint to fly to next (highlighted)
             public double PlayerAngle;          // degrees, 0 = up the map, clockwise
             /// <summary>Named sectors: the route's points from one gate / checkpoint to another, a name and a colour.</summary>
-            public readonly List<(List<(double X, double Y)> Points, string Name, HudColor Colour)> Sectors = new List<(List<(double X, double Y)>, string, HudColor)>();
+            public List<(List<(double X, double Y)> Points, string Name, HudColor Colour)> Sectors = new List<(List<(double X, double Y)>, string, HudColor)>();
         }
 
         /// <summary>Big centre countdown text ("3", "2", "1", "GO!"). Null = none.</summary>

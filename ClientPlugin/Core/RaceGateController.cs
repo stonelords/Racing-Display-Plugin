@@ -174,15 +174,8 @@ namespace RaceDisplay.Core
                 if (editMode) { editMode = false; game.SetDebugDraw(false); }
                 replaying = replayPending = replayCameraReady = false;
                 game.ShowHud(null);
-                game.HideGhostGrid(true);
-                ghostGridPlaced = ghostGridOn = false;
                 return;
             }
-
-            // The hologram ghost is placed while drawing; hide it if it wasn't placed last frame.
-            if (!ghostGridPlaced) game.HideGhostGrid(false);   // cheap when nothing is shown
-            ghostGridOn = ghostGridPlaced;
-            ghostGridPlaced = false;
 
             PluginLog.Step("frame");
             bool hasPose = game.TryGetControlledPose(out Vec3D pos, out Vec3D fwd, out Vec3D up);
@@ -198,7 +191,6 @@ namespace RaceDisplay.Core
                 else
                 {
                     PluginLog.StartTrace(60);
-                    worldEnteredAt = game.TimeSeconds;
                     OnWorldLoaded(position);
                 }
                 loadedHandle = game.WorldHandle;
@@ -206,15 +198,9 @@ namespace RaceDisplay.Core
             PluginLog.Step("world courses");
             CheckWorldCourses();
             KeepWorldCourseFile();
-            // Copying the ship for the ghost waits until the world has settled after loading.
-            if (settings.GhostUseCurrentShip && !replaying && game.TimeSeconds - worldEnteredAt > 15)
-            {
-                PluginLog.Step("remember ship");
-                RememberMyShip();
-            }
 
             PluginLog.Step("keys / menu");
-            keys.Update(game, settings.GetBinding);
+            keys.Update(game, settings.GetBinding, capturing);
             // The game's HUD key (U) has race HUD only as one of its steps.
             var hudCycle = game.TakeHudCycle(settings.RaceHudOnly);
             if (hudCycle.HasValue && hudCycle.Value != settings.RaceHudOnly)
@@ -278,9 +264,12 @@ namespace RaceDisplay.Core
             TrackLap(position, velocity);
             UpdateLiveGap(position);
 
-            if (crash.Update(velocity, game.TimeSeconds) && timer.AddCrash())
+            // A crash during the immunity time after the last crash penalty doesn't count.
+            if (crash.Update(velocity, game.TimeSeconds) && game.TimeSeconds - lastCrashPenaltyAt >= settings.CrashImmunitySeconds && timer.AddCrash())
             {
-                RaceNotify($"CRASH at {GameOptions.Speed(crash.LastImpactSpeed)}!  +{settings.CrashPenaltySeconds:0.#}s penalty", HudColor.Red);
+                lastCrashPenaltyAt = game.TimeSeconds;
+                RaceNotify($"CRASH at {GameOptions.Speed(crash.LastImpactSpeed)}!  +{settings.CrashPenaltySeconds:0.#}s penalty"
+                    + (settings.CrashImmunitySeconds > 0 ? $" (no crash penalty for {settings.CrashImmunitySeconds:0.#}s)" : ""), HudColor.Red);
                 FlashTimer(HudColor.Red);
                 Sound(settings.SoundMissed);
                 Sound(settings.SoundMissed, 120);
@@ -297,18 +286,24 @@ namespace RaceDisplay.Core
 
         private bool editMode;
         private int editTool = 3;                 // index into WheelLabels
-        private const int ToolStartFinish = 0, ToolStart = 1, ToolFinish = 2, ToolCheckpoint = 3, ToggleAir = 4, ToggleLine = 5;
+        private const int ToolStartFinish = 0, ToolStart = 1, ToolFinish = 2, ToolCheckpoint = 3;
         // Short: the game's wheel cuts long names. The last two aren't tools but switches (shown orange when on):
         // "In the air" places every tool's gate / checkpoint in open air instead of on a grid; "Racing line" shows
         // or hides the best lap line.
-        private static readonly string[] WheelLabels = { "Start/Finish", "Start gate", "Finish gate", "Checkpoint", "In the air", "Racing line" };
+        // The wheel only holds what you place. How it's placed (on a grid, pick blocks, in the air) is the placement
+        // mode, with its own key; Pick blocks works like the game's partial copy (two corner blocks).
+        private static readonly string[] WheelLabels = { "Start/Finish", "Start gate", "Finish gate", "Checkpoint" };
+        private BlockPick blockFirst;              // Pick blocks: the first corner, once clicked
+        private TimingGate blockPreview;           // Pick blocks: the aimed block, or the box from the first corner to it
         private TimingGate airPreview;             // where a gate / checkpoint would go in the air (In the air switch)
         private bool lmbWas, rmbWas;
         private GridBox? preview;
         private double previewAt = double.NegativeInfinity;
         private const double EditReach = 3000;    // how far away a grid can be picked (m)
 
-        private string ToolName => (settings.EditAirPlace ? "AIR " : "") + (
+        private string PlacementName => settings.EditAirPlace ? "IN THE AIR" : settings.EditBlockPick ? "PICK BLOCKS" : "ON A GRID";
+
+        private string ToolName => (settings.EditBlockPick && !settings.EditAirPlace && blockFirst != null ? "CORNER 2: " : "") + (
             editTool == ToolStartFinish ? "START / FINISH GATE"
             : editTool == ToolStart ? "START GATE"
             : editTool == ToolFinish ? "FINISH GATE"
@@ -322,13 +317,14 @@ namespace RaceDisplay.Core
             editMode = on;
             game.SetDebugDraw(on); // so the gate and checkpoint boxes show while editing
             preview = null;
+            blockFirst = null; blockPreview = null;
             lmbWas = rmbWas = true; // ignore a button already held
             if (on)
             {
                 timer.Reset();
                 results = shipResults = null;
                 countdownStart = null;
-                RaceNotify($"Course edit mode: left click a grid to set it, right click to remove. Hold {settings.GetBinding(GateKey.EditWheel)} for the tool wheel. {settings.GetBinding(GateKey.Undo)} / {settings.GetBinding(GateKey.Redo)}: undo / redo.", HudColor.Cyan);
+                RaceNotify($"Course edit mode: left click a grid to set it, right click to remove. Hold {settings.GetBinding(GateKey.EditWheel)} for the tool wheel, {settings.GetBinding(GateKey.PlacementMode)} changes how it's placed (grid / blocks / air). {settings.GetBinding(GateKey.Undo)} / {settings.GetBinding(GateKey.Redo)}: undo / redo.", HudColor.Cyan);
             }
             else
             {
@@ -352,11 +348,11 @@ namespace RaceDisplay.Core
                 if (!canAct) PluginLog.Info($"Edit wheel key ignored: menu open={controlsOpen} paused={game.IsPaused} focus={game.HasFocus}");
                 else if (!game.EditWheelOpen)
                 {
-                    // The racing line switch's slice shows orange while the line is on.
-                    var switches = new Dictionary<int, (byte R, byte G, byte B)>();
-                    if (settings.EditRacingLine) switches[ToggleLine] = (255, 140, 0);
-                    if (settings.EditAirPlace) switches[ToggleAir] = (255, 140, 0);
-                    game.OpenEditWheel(WheelLabels, editTool, settings.GetBinding(GateKey.EditWheel).Key & 0xFF, switches);
+                    // The current tool's slice is tinted a dark shade of its colour (cyan / purple / orange), so it
+                    // can't be mistaken for the bright hover highlight.
+                    var c = ToolColour;
+                    var tint = new Dictionary<int, (byte R, byte G, byte B)> { [editTool] = ((byte)(c.R * 0.45), (byte)(c.G * 0.45), (byte)(c.B * 0.45)) };
+                    game.OpenEditWheel(WheelLabels, editTool, settings.GetBinding(GateKey.EditWheel).Key & 0xFF, tint);
                     if (game.WheelFailed)
                     {
                         game.WheelFailed = false;
@@ -367,25 +363,27 @@ namespace RaceDisplay.Core
             if (game.EditWheelOpen && !keys.IsDown(GateKey.EditWheel) && !game.IsKeyDown(settings.GetBinding(GateKey.EditWheel).Key & 0xFF))
                 game.ReleaseEditWheel();
             bool gotPick = game.TryTakeWheelPick(out int picked);
-            if (gotPick && picked == ToggleAir)
+            // Placement mode (on a grid / pick blocks / in the air) and the racing line have their own keys.
+            if (canAct && !game.EditWheelOpen && keys.WasPressed(GateKey.PlacementMode))
             {
-                settings.EditAirPlace = !settings.EditAirPlace;
+                bool wasAir = settings.EditAirPlace, wasBlocks = settings.EditBlockPick && !wasAir;
+                settings.EditBlockPick = !wasAir && !wasBlocks;   // grid -> blocks
+                settings.EditAirPlace = wasBlocks;                // blocks -> air, air -> grid
+                blockFirst = null; blockPreview = null; airPreview = null; preview = null;
                 settings.Save(settingsPath);
-                lmbWas = rmbWas = true;
                 game.PlaySound(settings.SoundCheckpoint);
                 Notify(settings.EditAirPlace
-                    ? $"In the air: gates and checkpoints go in open air, {settings.AirCheckpointDistance:0} m ahead ({settings.GetBinding(GateKey.Grow)} / {settings.GetBinding(GateKey.Shrink)}: size)"
-                    : "In the air off: aim at a grid to set gates and checkpoints", HudColor.Cyan);
-                return;
+                    ? $"Placing: in the air, {settings.AirCheckpointDistance:0} m ahead ({settings.GetBinding(GateKey.Grow)} / {settings.GetBinding(GateKey.Shrink)}: size)"
+                    : settings.EditBlockPick
+                    ? "Placing: pick blocks. Left click one corner block, then the opposite corner; the box between them becomes the gate or checkpoint (right click clears the first corner)"
+                    : "Placing: on a grid. Aim at a ring or gate structure and left click", HudColor.Cyan);
             }
-            if (gotPick && picked == ToggleLine)
+            if (canAct && !game.EditWheelOpen && keys.WasPressed(GateKey.EditLine))
             {
                 settings.EditRacingLine = !settings.EditRacingLine;
                 settings.Save(settingsPath);
-                lmbWas = rmbWas = true;
                 game.PlaySound(settings.SoundCheckpoint);
                 Notify(settings.EditRacingLine ? "Best lap line shown while editing" : "Best lap line hidden while editing", HudColor.Purple);
-                return;
             }
             if (gotPick && picked >= 0 && picked < WheelLabels.Length)
             {
@@ -405,7 +403,19 @@ namespace RaceDisplay.Core
                 previewAt = game.TimeSeconds;
                 preview = game.TryGetLookedAtGrid(eye, dir, settings.GridSearchDistance, false, out GridBox gb) ? gb : (GridBox?)null;
             }
-            if (air) preview = null;
+            bool blocks = settings.EditBlockPick && !air;
+            if (hasRay && blocks && game.TimeSeconds - previewAt > 0.1)
+            {
+                previewAt = game.TimeSeconds;
+                blockPreview = null;
+                if (game.TryGetLookedAtBlock(eye, dir, settings.GridSearchDistance, out BlockPick aimed)
+                    && game.TryGetBlockSpan(blockFirst ?? aimed, blockFirst != null && ReferenceEquals(blockFirst.Grid, aimed.Grid) ? aimed : blockFirst ?? aimed, out GridBox span))
+                    blockPreview = new TimingGate(span.Center, span.Forward, span.Up, span.Width, span.Height, span.Depth);
+                else if (blockFirst != null && game.TryGetBlockSpan(blockFirst, blockFirst, out GridBox first))
+                    blockPreview = new TimingGate(first.Center, first.Forward, first.Up, first.Width, first.Height, first.Depth);
+            }
+            if (!blocks) { blockPreview = null; blockFirst = null; }
+            if (air || blocks) preview = null;
             if (!hasRay) return;
 
             if (lClick)
@@ -418,11 +428,37 @@ namespace RaceDisplay.Core
                     gate = airPreview;
                     where = $"in the air ({settings.AirCheckpointSize:0} m, {settings.AirCheckpointDistance:0} m ahead)";
                 }
+                else if (blocks)
+                {
+                    // Like partial copy: first click one corner block, then the opposite one.
+                    if (!game.TryGetLookedAtBlock(eye, dir, settings.GridSearchDistance, out BlockPick picked2))
+                    {
+                        Notify("Aim at a block and left click", HudColor.Yellow);
+                        return;
+                    }
+                    if (blockFirst == null || !ReferenceEquals(blockFirst.Grid, picked2.Grid))
+                    {
+                        bool moved = blockFirst != null;
+                        blockFirst = picked2;
+                        Sound(settings.SoundCheckpoint);
+                        Notify((moved ? "That block is on another grid, so it's the first corner now. " : "First corner set on '" + picked2.GridName + "'. ")
+                            + "Now left click the opposite corner block (right click cancels)", HudColor.Cyan);
+                        return;
+                    }
+                    if (!game.TryGetBlockSpan(blockFirst, picked2, out GridBox span))
+                    {
+                        Notify("Couldn't make a box from those blocks", HudColor.Red);
+                        return;
+                    }
+                    blockFirst = null;
+                    gate = GateFromGrid(span);
+                    where = $"across the picked blocks of '{span.Name}' ({span.Width:0.#} x {span.Height:0.#} x {span.Depth:0.#} m)";
+                }
                 else
                 {
                     if (!game.TryGetLookedAtGrid(eye, dir, settings.GridSearchDistance, settings.FitToOpening, out GridBox g))
                     {
-                        Notify("Aim at a grid (a ring or gate structure) and left click, or turn on In the air on the tool wheel", HudColor.Yellow);
+                        Notify($"Aim at a grid (a ring or gate structure) and left click, or change the placement mode ({settings.GetBinding(GateKey.PlacementMode)}) to pick blocks or in the air", HudColor.Yellow);
                         return;
                     }
                     gate = GateFromGrid(g);
@@ -456,6 +492,11 @@ namespace RaceDisplay.Core
                     Notify($"Checkpoint {list.Count} set {where}", HudColor.Cyan);
                 }
                 Sound(settings.SoundCheckpoint);
+            }
+            else if (rClick && blocks && blockFirst != null)
+            {
+                blockFirst = null;
+                Notify("First corner cleared", HudColor.Yellow);
             }
             else if (rClick)
             {
@@ -619,12 +660,16 @@ namespace RaceDisplay.Core
         {
             if (model.Timer != null)
             {
-                model.Timer.Label = "COURSE EDIT MODE";
+                model.Timer.Label = "COURSE EDIT MODE  ·  " + PlacementName;
                 model.Timer.Big = ToolName;
                 model.Timer.BigColour = ToolColour;
-                model.Timer.Footer = settings.EditAirPlace
-                    ? $"Left click: place   Right click: remove   {settings.GetBinding(GateKey.Grow)} / {settings.GetBinding(GateKey.Shrink)}: size ({settings.AirCheckpointSize:0} m)   Hold {settings.GetBinding(GateKey.EditWheel)}: tools"
-                    : $"Left click: set   Right click: remove   Hold {settings.GetBinding(GateKey.EditWheel)}: tools   {settings.GetBinding(GateKey.EditMode)}: done";
+                model.Timer.Footer = settings.EditBlockPick && !settings.EditAirPlace
+                    ? (blockFirst == null
+                        ? $"Left click: first corner block   Right click: remove   Hold {settings.GetBinding(GateKey.EditWheel)}: tools   {settings.GetBinding(GateKey.PlacementMode)}: placement"
+                        : $"Left click: opposite corner block   Right click: cancel   Hold {settings.GetBinding(GateKey.EditWheel)}: tools   {settings.GetBinding(GateKey.PlacementMode)}: placement")
+                    : settings.EditAirPlace
+                    ? $"Left click: place   Right click: remove   {settings.GetBinding(GateKey.Grow)} / {settings.GetBinding(GateKey.Shrink)}: size ({settings.AirCheckpointSize:0} m)   Hold {settings.GetBinding(GateKey.EditWheel)}: tools   {settings.GetBinding(GateKey.PlacementMode)}: placement"
+                    : $"Left click: set   Right click: remove   Hold {settings.GetBinding(GateKey.EditWheel)}: tools   {settings.GetBinding(GateKey.PlacementMode)}: placement   {settings.GetBinding(GateKey.EditMode)}: done";
                 model.Timer.Delta = null;
                 model.Timer.Dots = null;
                 model.Timer.Hint = null;
@@ -641,6 +686,12 @@ namespace RaceDisplay.Core
             model.RaceStatsTitle = "COURSE";
             model.RaceStatsOneColumn = true;
             DrawCourseRoute();
+            if (blockPreview != null && !game.EditWheelOpen)
+            {
+                var c = blockPreview.GetCorners();
+                for (int i = 0; i < TimingGate.Edges.GetLength(0); i++)
+                    game.DrawMarkerLine(c[TimingGate.Edges[i, 0]], c[TimingGate.Edges[i, 1]], blockFirst != null ? HudColor.Yellow : ToolColour);
+            }
             if (airPreview != null && !game.EditWheelOpen)
             {
                 var c = airPreview.GetCorners();
@@ -807,18 +858,6 @@ namespace RaceDisplay.Core
             if (a.Length >= 13 && b.Length >= 13)
                 axes = new[] { Lerp(4).Normalized(), Lerp(7).Normalized(), Lerp(10).Normalized() };
             return true;
-        }
-
-        /// <summary>Where the best lap was at this lap time (for the ghost), or null.</summary>
-        private static Vec3D? GhostPosition(List<double[]> trace, double lapTime)
-        {
-            if (trace == null || trace.Count < 2 || lapTime > trace[trace.Count - 1][3]) return null;
-            int lo = 0, hi = trace.Count - 1;
-            while (hi - lo > 1) { int mid = (lo + hi) / 2; if (trace[mid][3] <= lapTime) lo = mid; else hi = mid; }
-            var a = trace[lo]; var b = trace[hi];
-            double span = b[3] - a[3];
-            double u = span > 1e-6 ? Math.Max(0, Math.Min(1, (lapTime - a[3]) / span)) : 0;
-            return new Vec3D(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u);
         }
 
         /// <summary>(top speed, average speed) of the lap just finished.</summary>
@@ -2069,6 +2108,8 @@ namespace RaceDisplay.Core
                 }
 
                 case LapEventKind.RaceStarted:
+                    lastCrashPenaltyAt = double.NegativeInfinity;
+                    PluginLog.StartTrace(30, "race start");   // frame times while the race gets going
                     if (timer.PracticeLapsDone.Count == 0 || currentShip == null) currentShip = game.GetShipShape(250);
                     ResetRaceStats();
                     results = shipResults = null;
@@ -2392,88 +2433,7 @@ namespace RaceDisplay.Core
             };
         }
 
-        private double worldEnteredAt = double.NegativeInfinity;
         private Vec3D? playerForward;
-        private bool ghostGridPlaced, ghostGridOn;   // hologram ghost placed this frame / last frame
-        private List<double[]> myShipShape, myShipFor;
-        private string myShipName;
-        private double myShipAt = double.NegativeInfinity;
-        private List<double[]> myShipCentred;
-
-        /// <summary>
-        /// The ship you're flying, as block boxes, moved so its middle sits where the recorded ship's middle was
-        /// (the recorded path is the other ship's pivot). Refreshed every 5 s while you're in a ship; falls back to
-        /// the recorded shape if you aren't in one.
-        /// </summary>
-        /// <summary>
-        /// Keeps a copy of the last ship you sat in (refreshed every 5 s while seated, and saved), so the ghost can
-        /// look like it even when you start a replay on foot.
-        /// </summary>
-        private void RememberMyShip()
-        {
-            if (myShipShape == null && settings.MyShipShape != null && settings.MyShipShape.Count > 0)
-            { myShipShape = settings.MyShipShape; myShipName = settings.MyShipName; myShipCentred = null; }
-            string name = game.ShipName;
-            if (name == null) return;
-            if (name == myShipName && game.TimeSeconds - myShipAt <= 5 && game.TimeSeconds >= myShipAt) return;
-            myShipAt = game.TimeSeconds;
-            var shape = game.GetShipShape(250);
-            if (shape == null || shape.Count == 0) return;
-            bool changed = name != myShipName || myShipShape == null || shape.Count != myShipShape.Count;
-            if (changed || game.GhostGridName != name) game.CopyGhostGrid();   // real hologram copy (background)
-            myShipShape = shape; myShipName = name; myShipCentred = null;
-            if (changed)
-            {
-                settings.MyShipShape = shape; settings.MyShipName = name;
-                settings.Save(settingsPath);
-                PluginLog.Info($"Ghost looks like my ship: using \"{name}\" ({shape.Count} boxes)");
-            }
-        }
-
-        /// <summary>
-        /// Where to put your ship's pivot so its middle is where the recorded ship's middle was. The line is the
-        /// recorded ship's pivot, which can be well off to one side of that ship, and your ship's pivot is
-        /// somewhere else again, so pivot-on-pivot puts the hologram off the line.
-        /// </summary>
-        private Vec3D MyShipPivot(List<double[]> recorded, Vec3D g, Vec3D[] axes)
-        {
-            RememberMyShip();
-            if (myShipShape == null || myShipShape.Count == 0 || recorded == null || recorded.Count == 0) return g;
-            var mine = BoxCentre(myShipShape);
-            var target = BoxCentre(recorded);
-            return g + axes[0] * (target[0] - mine[0]) + axes[1] * (target[1] - mine[1]) + axes[2] * (target[2] - mine[2]);
-        }
-
-        private static double[] BoxCentre(List<double[]> boxes)
-        {
-            double[] b = { double.MaxValue, double.MaxValue, double.MaxValue, double.MinValue, double.MinValue, double.MinValue };
-            foreach (var k in boxes) for (int i = 0; i < 3; i++) { b[i] = Math.Min(b[i], k[i]); b[i + 3] = Math.Max(b[i + 3], k[i + 3]); }
-            return new[] { (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2 };
-        }
-
-        private List<double[]> AsMyShip(List<double[]> recorded)
-        {
-            RememberMyShip();
-            if (myShipShape == null) return recorded;
-            if (myShipCentred != null && ReferenceEquals(myShipFor, recorded)) return myShipCentred;
-
-            double[] Centre(List<double[]> boxes)
-            {
-                double[] b = { double.MaxValue, double.MaxValue, double.MaxValue, double.MinValue, double.MinValue, double.MinValue };
-                foreach (var k in boxes) for (int i = 0; i < 3; i++) { b[i] = Math.Min(b[i], k[i]); b[i + 3] = Math.Max(b[i + 3], k[i + 3]); }
-                return new[] { (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2 };
-            }
-            var mine = Centre(myShipShape);
-            var target = recorded != null && recorded.Count > 0 ? Centre(recorded) : new double[3];
-            myShipCentred = myShipShape.Select(k => new[]
-            {
-                k[0] - mine[0] + target[0], k[1] - mine[1] + target[1], k[2] - mine[2] + target[2],
-                k[3] - mine[0] + target[0], k[4] - mine[1] + target[1], k[5] - mine[2] + target[2],
-            }).ToList();
-            myShipFor = recorded;
-            return myShipCentred;
-        }
-
         private void ToggleResultsMode()
         {
             settings.ResultsForShip = !settings.ResultsForShip;
@@ -2725,17 +2685,7 @@ namespace RaceDisplay.Core
             Vec3D bottom = g - up * size;
 
             var ship = shipShape;
-            if (settings.GhostUseCurrentShip && !replaying && !second) ship = AsMyShip(shipShape);
-            game.GhostGridOpacity = (float)(settings.GhostShipOpacity / 100.0);
-            if (!second && settings.GhostUseCurrentShip && (settings.GhostProjection || replaying) && axes != null
-                && game.TimeSeconds - worldEnteredAt > 15
-                && game.PlaceGhostGrid(MyShipPivot(shipShape, g, axes), axes[0], axes[1], axes[2]))
-            {
-                // A real hologram copy of your ship is flying the line; no outline needed.
-                ghostGridPlaced = true;
-                bottom = g - up * Math.Max(size, 5);
-            }
-            else if ((settings.GhostProjection || replaying) && axes != null && ship != null && ship.Count > 0)
+            if ((settings.GhostProjection || replaying) && axes != null && ship != null && ship.Count > 0)
             {
                 DrawGhostShip(ship, g, axes, dist, second);
                 bottom = g - up * Math.Max(size, 5);
@@ -2808,25 +2758,16 @@ namespace RaceDisplay.Core
             orbitLastCam = orbitLastDir = null;
             orbitInputSeen = orbitLogged = false;
             replayCinematicTried = false;
-            if (settings.GhostUseCurrentShip)
-            {
-                replayShip = AsMyShip(replayShip);
-                if (myShipShape == null) Notify("Ghost looks like my ship: sit in a ship once first so it can be copied", HudColor.Orange);
-                else if (game.GhostGridName == null)
-                    Notify("Ghost looks like my ship: no hologram copy yet (sit in the ship with the build tool picked up once); showing the outline", HudColor.Orange);
-            }
             ChaseView(0, out Vec3D cam, out Vec3D look, out Vec3D up);
             if (!game.StartSpectator(cam, look, up)) { Notify("Couldn't switch to the spectator camera", HudColor.Red); return; }
             replaying = true;
             replayCameraReady = false;
             replayWaitMs = Environment.TickCount64;
-            Notify((replayTitle != null ? $"Replay: {replayTitle}" : $"Replay of your best lap ({LapTimer.Format(rec?.BestLap ?? replayLength)})")
-                + (settings.GhostUseCurrentShip && (game.GhostGridName ?? myShipName) != null ? $", ghost shown as {game.GhostGridName ?? myShipName}" : ""), HudColor.Purple);
+            Notify((replayTitle != null ? $"Replay: {replayTitle}" : $"Replay of your best lap ({LapTimer.Format(rec?.BestLap ?? replayLength)})"), HudColor.Purple);
         }
 
         private void StopReplay(string message)
         {
-            game.HideGhostGrid(true);   // remove the ghost ship copy now
             bool wasReplaying = replaying;
             replaying = false;
             replayPending = false;
@@ -3031,7 +2972,8 @@ namespace RaceDisplay.Core
         /// position and orientation. Far away it's just the ship's overall box (still filled).
         /// </summary>
         // ---- Minimap: the course from above, the start gate's forward pointing up the map.
-        private string minimapKey;
+        private int minimapKey, minimapVersion;
+        private double lastCrashPenaltyAt = double.NegativeInfinity;   // for the crash immunity time
         private Vec3D mmOrigin, mmE1, mmE2;          // map axes (right, up the map) on the course's ground plane
         private double mmMinU, mmMinV, mmSpan;
         private HudModel.MinimapPanel mmStatic;      // route / lines in map coordinates, rebuilt when they change
@@ -3053,13 +2995,24 @@ namespace RaceDisplay.Core
         private HudModel.MinimapPanel BuildMinimap()
         {
             if (timer.Gate == null) return null;
-            var route = CourseRoute();
             var line = replaying ? replayTrace : GhostTrace;
             var line2 = secondGhostTrace != null && !ReferenceEquals(secondGhostTrace, line) ? secondGhostTrace : null;
-            string key = $"{CourseKey()}|{route.Count}|{line?.GetHashCode()}|{line2?.GetHashCode()}|{(timer.Gate.Center.X):0}|{settings.MinimapSize}|{settings.RacingLineColourMode}|{string.Join(",", settings.CourseSectors.Select(x => $"{x.Name}:{x.From}-{x.To}"))}";
+            // What the map's route and lines are made from, as a number (no text built every frame).
+            var hk = new HashCode();
+            hk.Add(game.WorldId);
+            void AddGate(TimingGate g) { if (g == null) { hk.Add(0); return; } hk.Add(Math.Round(g.Center.X)); hk.Add(Math.Round(g.Center.Y)); hk.Add(Math.Round(g.Center.Z)); }
+            AddGate(timer.Gate); AddGate(timer.FinishGate);
+            hk.Add(timer.Checkpoints.Count);
+            foreach (var cp in timer.Checkpoints) AddGate(cp);
+            hk.Add(line == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(line)); hk.Add(line?.Count ?? 0);
+            hk.Add(line2 == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(line2)); hk.Add(line2?.Count ?? 0);
+            hk.Add(settings.MinimapSize); hk.Add(settings.RacingLineColourMode);
+            foreach (var sec in settings.CourseSectors) { hk.Add(sec.Name); hk.Add(sec.From); hk.Add(sec.To); }
+            int key = hk.ToHashCode();
             if (key != minimapKey || mmStatic == null)
             {
                 minimapKey = key;
+                var route = CourseRoute();
                 // Axes: the start gate's right and forward, flattened onto the ground (its up).
                 Vec3D up = timer.Gate.Up.Normalized();
                 Vec3D fwd = timer.Gate.Forward - up * Vec3D.Dot(timer.Gate.Forward, up);
@@ -3092,7 +3045,7 @@ namespace RaceDisplay.Core
                 mmMinU = cu - span / 2;
                 mmMinV = cv - span / 2;
 
-                mmStatic = new HudModel.MinimapPanel { Size = settings.MinimapSize, StaticSig = key };
+                mmStatic = new HudModel.MinimapPanel { Size = settings.MinimapSize, StaticSig = "mm" + (++minimapVersion) };
                 foreach (var r in route) mmStatic.Route.Add(MapPoint(r.Gate.Center));
                 // Named sectors: the route from one point to another, each in its own colour.
                 for (int k = 0; k < settings.CourseSectors.Count; k++)
@@ -3120,11 +3073,12 @@ namespace RaceDisplay.Core
             }
 
             var m = new HudModel.MinimapPanel { Size = mmStatic.Size, StaticSig = mmStatic.StaticSig, LineColour = line2 != null ? HudColor.Purple : RacingLineColour };
-            m.Route.AddRange(mmStatic.Route);
-            m.Line.AddRange(mmStatic.Line);
-            m.Line2.AddRange(mmStatic.Line2);
-            m.LineColours.AddRange(mmStatic.LineColours);
-            m.Sectors.AddRange(mmStatic.Sectors);
+            // The same (unchanging) lists every frame, not copies.
+            m.Route = mmStatic.Route;
+            m.Line = mmStatic.Line;
+            m.Line2 = mmStatic.Line2;
+            m.LineColours = mmStatic.LineColours;
+            m.Sectors = mmStatic.Sectors;
 
             // Gates and checkpoints: the next one orange, flown ones green, missed ones red, the rest grey; gates cyan / purple.
             bool running = timer.State == TimerState.Running;
@@ -3307,6 +3261,8 @@ namespace RaceDisplay.Core
             finally { if (second) SwapHull(); }
         }
 
+        private List<double[]> hullBox, hullBoxFor;
+
         private void DrawGhostShipInner(List<double[]> ship, Vec3D g, Vec3D[] axes, double dist, bool second)
         {
             if (!ReferenceEquals(ship, hullFor)) BuildHull(ship);
@@ -3318,9 +3274,14 @@ namespace RaceDisplay.Core
             IEnumerable<double[]> outline = hullEdges;
             if (dist > 700 || hullFaces.Count > 3000)
             {
-                var whole = new List<double[]>();
-                for (int side = 0; side < 6; side++) whole.Add(BoxFace(hullBounds, side));
-                faces = whole;
+                // Far away: just its bounding box (made once per hull).
+                if (!ReferenceEquals(hullBoxFor, hullFaces))
+                {
+                    hullBoxFor = hullFaces;
+                    hullBox = new List<double[]>();
+                    for (int side = 0; side < 6; side++) hullBox.Add(BoxFace(hullBounds, side));
+                }
+                faces = hullBox;
                 outline = null;
             }
 
@@ -3542,6 +3503,7 @@ namespace RaceDisplay.Core
             }
 
             // ---- Markers (always visible, even with the HUD hidden)
+            PluginLog.Step("markers");
             if (settings.ShowMarkers)
             {
                 // During a race the NEXT checkpoint (lowest number not yet flown through) is big, bright and shows

@@ -46,6 +46,12 @@ namespace RaceDisplay.Core
             },
             new SettingDef
             {
+                Section = "Penalties", Name = "Crash immunity (s)", Min = 0, Max = 60, Step = 0.5, Format = "{0:0.0}",
+                Description = "After a crash penalty, further crashes don't add a penalty until this many seconds have passed (so bouncing off a wall or tumbling only counts once). 0 turns it off.",
+                Get = s => s.CrashImmunitySeconds, Set = (s, v) => s.CrashImmunitySeconds = v,
+            },
+            new SettingDef
+            {
                 Section = "Penalties", Name = "Crash minimum speed (m/s)", Min = 0, Max = 150, Step = 1,
                 Description = "Crashes only count when you were going at least this fast.",
                 Get = s => s.CrashMinSpeed, Set = (s, v) => s.CrashMinSpeed = v,
@@ -53,7 +59,7 @@ namespace RaceDisplay.Core
             new SettingDef
             {
                 Section = "Penalties", Name = "Crash hardness (m/s²)", Min = 10, Max = 150, Step = 5,
-                Description = "How sudden the stop must be to count as a crash. Lower = more sensitive. 60 (about 6 g, the default) ignores hard braking but catches real impacts.",
+                Description = "How sudden the stop must be to count as a crash. Lower = more sensitive. The default is 20 (about 2 g); raise it if hard braking counts as a crash.",
                 Get = s => s.CrashDeceleration, Set = (s, v) => s.CrashDeceleration = v,
             },
             new SettingDef
@@ -124,13 +130,13 @@ namespace RaceDisplay.Core
             new SettingDef
             {
                 Section = "Gates and checkpoints", Name = "Best lap line in edit mode", Toggle = true,
-                Description = "Show your best lap's racing line while editing the course, to see how checkpoints sit against the line people fly. Also on the edit tool wheel.",
+                Description = "Show your best lap's racing line while editing the course, to see how checkpoints sit against the line people fly. Also switched with Shift+L in edit mode (Controls tab: Best lap line while editing).",
                 Get = s => B(s.EditRacingLine), Set = (s, v) => s.EditRacingLine = v >= 0.5,
             },
             new SettingDef
             {
                 Section = "Gates and checkpoints", Name = "Air gate size (m)", Min = 5, Max = 300, Step = 5,
-                Description = "Size of a gate or checkpoint placed in open air (\"In the air\" on the edit tool wheel; no grid needed). The grow / shrink keys change it while In the air is on.",
+                Description = "Size of a gate or checkpoint placed in open air (placement mode In the air, Shift+T in edit mode; no grid needed). The grow / shrink keys change it while placing in the air.",
                 Get = s => s.AirCheckpointSize, Set = (s, v) => s.AirCheckpointSize = v,
             },
             new SettingDef
@@ -308,18 +314,6 @@ namespace RaceDisplay.Core
                 Section = "Ghost and replay", Name = "Ghost as ship projection", Toggle = true,
                 Description = "On: the ghost is a see-through copy of the ship that set your best lap, flying it with the same heading and roll. Off: a small diamond.",
                 Get = s => B(s.GhostProjection), Set = (s, v) => s.GhostProjection = v >= 0.5,
-            },
-            new SettingDef
-            {
-                Section = "Ghost and replay", Name = "Ghost looks like my ship", Toggle = true,
-                Description = "The ghost (and the replay) is a real hologram copy of the ship you're flying, or the last one you sat in (the same hologram the game shows when pasting), flying the recorded line. Falls back to the outline if the copy can't be made. The copy is taken when you sit in the ship; the build tool needs to have been picked up once this session. Handy to see where your current ship would be against an old best.",
-                Get = s => B(s.GhostUseCurrentShip), Set = (s, v) => s.GhostUseCurrentShip = v >= 0.5,
-            },
-            new SettingDef
-            {
-                Section = "Ghost and replay", Name = "Ship ghost opacity (%)", Min = 10, Max = 100, Step = 5,
-                Description = "How see-through the ship ghost (\"Ghost looks like my ship\") is: 100 is as solid as the game draws it.",
-                Get = s => s.GhostShipOpacity, Set = (s, v) => s.GhostShipOpacity = v,
             },
             new SettingDef
             {

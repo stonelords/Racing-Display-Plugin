@@ -111,10 +111,10 @@ namespace RaceDisplay
             DetachedFromVisualTree += (_, __) => { timer.Stop(); shown = false; };
         }
 
-        private static double Dist((double X, double Y) a, (double X, double Y) b) => Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y));
         private readonly List<(string Name, HudColor Colour, Point Mid, Vector Normal)> sectorInfo = new List<(string, HudColor, Point, Vector)>();
 
-        private static IBrush Brush(HudColor c) => new SolidColorBrush(Color.FromArgb(c.A, c.R, c.G, c.B));
+        private static IBrush Brush(HudColor c) => UiBrushes.Of(c);
+        private string liveSig;   // what the dots / labels / ghosts / you were last drawn for
 
         private void Tick()
         {
@@ -164,21 +164,43 @@ namespace RaceDisplay
                         lines.Children.Add(new Polyline
                         {
                             Points = new AvaloniaList<Point>(mm.Route.ConvertAll(p => P(p.X, p.Y))),
-                            Stroke = new SolidColorBrush(Color.FromArgb(150, 235, 235, 245)),
+                            Stroke = UiBrushes.Get(150, 235, 235, 245),
                             StrokeThickness = 2 * sc,
                             StrokeDashArray = new AvaloniaList<double> { 4, 3 },
                         });
                     if (!opt.RacingLine) { }
                     else if (mm.LineColours.Count > 0)
                     {
+                        // Segments grouped by colour (rounded to a few shades): one path per colour, not one line each.
+                        var groups = new Dictionary<uint, StreamGeometry>();
+                        var open = new Dictionary<uint, (StreamGeometryContext Ctx, int Last)>();
                         for (int i = 0; i + 1 < mm.Line.Count && i < mm.LineColours.Count; i++)
-                            lines.Children.Add(new Line
+                        {
+                            var c = mm.LineColours[i];
+                            uint key = (uint)(c.R & 0xF0) << 16 | (uint)(c.G & 0xF0) << 8 | (uint)(c.B & 0xF0);
+                            if (!open.TryGetValue(key, out var o))
                             {
-                                StartPoint = P(mm.Line[i].X, mm.Line[i].Y),
-                                EndPoint = P(mm.Line[i + 1].X, mm.Line[i + 1].Y),
-                                Stroke = Brush(mm.LineColours[i].WithAlpha(255)),
+                                var g = new StreamGeometry();
+                                groups[key] = g;
+                                o = (g.Open(), -2);
+                            }
+                            if (o.Last != i - 1)
+                            {
+                                if (o.Last >= 0) o.Ctx.EndFigure(false);
+                                o.Ctx.BeginFigure(P(mm.Line[i].X, mm.Line[i].Y), false);
+                            }
+                            o.Ctx.LineTo(P(mm.Line[i + 1].X, mm.Line[i + 1].Y));
+                            open[key] = (o.Ctx, i);
+                        }
+                        foreach (var kv in open) { kv.Value.Ctx.EndFigure(false); kv.Value.Ctx.Dispose(); }
+                        foreach (var kv in groups)
+                            lines.Children.Add(new Path
+                            {
+                                Data = kv.Value,
+                                Stroke = UiBrushes.Get(255, (byte)(kv.Key >> 16 | 0x08), (byte)((kv.Key >> 8 & 0xFF) | 0x08), (byte)((kv.Key & 0xFF) | 0x08)),
                                 StrokeThickness = 4 * sc,
                                 StrokeLineCap = PenLineCap.Round,
+                                StrokeJoin = PenLineJoin.Round,
                             });
                     }
                     else if (mm.Line.Count > 1)
@@ -199,7 +221,15 @@ namespace RaceDisplay
                         });
                 }
 
-                // Gates, checkpoints and their labels, the next one ringed, then the ghosts and you.
+                // Gates, checkpoints and their labels, the next one ringed, then the ghosts and you. Only redrawn
+                // when something on it has moved (by a pixel) or changed colour.
+                var ls = new System.Text.StringBuilder(drawnSig).Append(side.ToString("0")).Append(opt.Checkpoints).Append(opt.Labels).Append(opt.Ghosts).Append(opt.You).Append(opt.Sectors).Append(mm.NextIndex).Append('|');
+                foreach (var pt in mm.Points) ls.Append(pt.Colour.R).Append(pt.Colour.G).Append(pt.Colour.B).Append(',');
+                foreach (var g in mm.Ghosts) ls.Append('g').Append((int)(g.X * side)).Append(',').Append((int)(g.Y * side));
+                if (mm.PlayerX.HasValue) ls.Append('p').Append((int)(mm.PlayerX.Value * side)).Append(',').Append((int)(mm.PlayerY.Value * side)).Append(',').Append((int)mm.PlayerAngle);
+                string sigNow = ls.ToString();
+                if (sigNow == liveSig) return;
+                liveSig = sigNow;
                 live.Children.Clear();
                 // Everything placed so far, so labels can keep clear of it.
                 var taken = new List<Rect>();
@@ -236,7 +266,7 @@ namespace RaceDisplay
                     if (string.IsNullOrEmpty(pt.Label) || !opt.Labels) continue;
                     var label = new Border
                     {
-                        Background = new SolidColorBrush(Color.FromArgb(225, 10, 12, 16)),
+                        Background = UiBrushes.Get(225, 10, 12, 16),
                         CornerRadius = new CornerRadius(3 * sc),
                         Padding = new Thickness(5 * sc, 1 * sc, 5 * sc, 2 * sc),
                         Child = new TextBlock { Text = pt.Label, FontSize = 18 * sc, FontWeight = FontWeight.Bold, Foreground = Brush(pt.Colour.WithAlpha(255)) },
@@ -257,7 +287,7 @@ namespace RaceDisplay
                     var spot = LabelPlacer.Place(info.Mid, info.Normal, lw, lh, taken, r => frameRect.Contains(r), 8 * sc);
                     var tag = new Border
                     {
-                        Background = new SolidColorBrush(Color.FromArgb(230, 10, 12, 16)),
+                        Background = UiBrushes.Get(230, 10, 12, 16),
                         BorderBrush = Brush(info.Colour.WithAlpha(220)),
                         BorderThickness = new Thickness(1.5),
                         CornerRadius = new CornerRadius(4 * sc),

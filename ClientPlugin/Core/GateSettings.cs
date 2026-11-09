@@ -42,11 +42,12 @@ namespace RaceDisplay.Core
 
         // ---- Crash penalty: a sudden big loss of speed while going fast counts as a crash.
         public double CrashPenaltySeconds { get; set; } = 5.0;
+        /// <summary>After a crash penalty, no other crash penalty for this many seconds (bouncing off a wall, etc).</summary>
+        public double CrashImmunitySeconds { get; set; } = 5.0;
         /// <summary>Only crashes at or above this speed (m/s) count.</summary>
         public double CrashMinSpeed { get; set; } = 20.0;
-        /// <summary>How hard the stop must be (m/s²). Lower = more sensitive. 60 is about 6 g: well above hard
-        /// braking with dampeners, well below a real impact at 20 m/s or more.</summary>
-        public double CrashDeceleration { get; set; } = 60.0;
+        /// <summary>How hard the stop must be (m/s²). Lower = more sensitive. 20 is about 2 g.</summary>
+        public double CrashDeceleration { get; set; } = 20.0;
         /// <summary>Minimum speed lost in the impact (m/s), so small scrapes don't count.</summary>
         public double CrashMinSpeedLoss { get; set; } = 8.0;
         /// <summary>The impact must also take away at least this share of your speed (0.25 = 25%).</summary>
@@ -97,12 +98,12 @@ namespace RaceDisplay.Core
         // ---- Countdown start
         /// <summary>The 3-2-1-GO countdown when you stop near the start gate. Off: races only start by flying through the gate.</summary>
         public bool CountdownEnabled { get; set; } = true;
-        /// <summary>The ghost (and replay) is drawn as the ship you're flying instead of the ship that set the lap.</summary>
-        public bool GhostUseCurrentShip { get; set; }
         /// <summary>Course edit mode: show the best lap's racing line.</summary>
         public bool EditRacingLine { get; set; } = true;
         /// <summary>Course edit mode: gates and checkpoints are placed in open air (no grid).</summary>
         public bool EditAirPlace { get; set; }
+        /// <summary>Course edit mode: gates and checkpoints are set by picking two corner blocks (like partial copy).</summary>
+        public bool EditBlockPick { get; set; }
         /// <summary>Checkpoint dots and sector times coloured like F1 timing (purple / green / yellow).</summary>
         public bool SectorColours { get; set; } = true;
         /// <summary>Racing line colours: 0 = plain magenta, 1 = by speed (red slow, yellow, green fast), 2 = braking / accelerating.</summary>
@@ -119,11 +120,6 @@ namespace RaceDisplay.Core
         public double AirCheckpointSize { get; set; } = 30;
         /// <summary>Course edit mode: how far ahead of you an air checkpoint is placed, metres.</summary>
         public double AirCheckpointDistance { get; set; } = 40;
-        /// <summary>Opacity of the solid ship ghost, in percent.</summary>
-        public double GhostShipOpacity { get; set; } = 100;
-        /// <summary>The last ship you sat in, as block boxes (for "ghost looks like my ship").</summary>
-        public List<double[]> MyShipShape { get; set; }
-        public string MyShipName { get; set; }
         /// <summary>Replay camera: true = orbit (fly the camera around, it keeps aiming at the ghost), false = chase.</summary>
         public bool ReplayOrbit { get; set; } = true;
         /// <summary>The replay uses the game's cinematic spectator (smooth movement, its look-around keys and lock).</summary>
@@ -194,7 +190,7 @@ namespace RaceDisplay.Core
         public bool ForwardStartOnly { get; set; } = true;
 
         /// <summary>The minimap zooms in and follows you while you're moving. Off: it always shows the whole course.</summary>
-        public bool MinimapFollow { get; set; } = true;
+        public bool MinimapFollow { get; set; } = false;
 
         /// <summary>Race HUD only: the game's own HUD (flight, toolbar, character, hints) is hidden; the race HUD stays.</summary>
         public bool RaceHudOnly { get; set; }
@@ -345,6 +341,10 @@ namespace RaceDisplay.Core
             s.CurrentCourseName = new Dictionary<string, string>();
             s.ReversedWorlds = new HashSet<string>();
             s.CourseSectors = new List<NamedSector>();
+            // Bindings for keys that no longer exist.
+            s.KeyBindings ??= new Dictionary<string, KeyBinding>();
+            foreach (var name in new List<string>(s.KeyBindings.Keys))
+                if (!Enum.TryParse<GateKey>(name, out _)) s.KeyBindings.Remove(name);
             return s;
         }
 

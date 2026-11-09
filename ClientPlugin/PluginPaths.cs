@@ -12,6 +12,5 @@ namespace RaceDisplay
         /// <summary>%AppData%\SpaceEngineers2\AppData\RaceDisplay</summary>
         public static string Folder => Path.Combine(Roaming, "SpaceEngineers2", "AppData", "RaceDisplay");
 
-        public const string SettingsFile = "RaceDisplay.json";
     }
 }

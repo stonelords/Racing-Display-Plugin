@@ -570,7 +570,7 @@ namespace RaceDisplay
             raceRows = new StackPanel();
             racePage = new ScrollViewer { Content = raceRows, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             recordsPage = new ScrollViewer { Content = recordRows, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-            infoPage = infoTab == null ? null : new ScrollViewer { Content = BuildInfo(s), HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            infoPage = infoTab == null ? null : new ScrollViewer { Content = BuildInfo(s, null, null), HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             courseRows = new StackPanel();
             coursesPage = new ScrollViewer { Content = courseRows, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
             courseNameBox = new TextBox { Watermark = "Course name", MinWidth = 260 * s, VerticalContentAlignment = VerticalAlignment.Center };
@@ -835,23 +835,102 @@ namespace RaceDisplay
 
         // ---------------------------------------------------------------- Info tab
 
-        /// <summary>The guide for the Help screen (F1 > Racing Display): the same content as the Info tab.</summary>
-        internal static StackPanel BuildGuide(double s) => BuildInfo(s);
+        /// <summary>The pages of the guide, each its own topic under Racing Display in the Help screen (F1).</summary>
+        internal static readonly string[] GuidePages =
+        {
+            "Getting started", "Building courses", "Timer and colours", "Penalties", "HUD and markers",
+            "Minimap and Race Map", "Ghosts and replays", "Results and records", "Menu, settings and keys",
+        };
 
-        /// <summary>The Info tab: how to race, and what the colours, dots, icons and markers mean.</summary>
-        private static StackPanel BuildInfo(double s)
+        /// <summary>
+        /// The guide for the Help screen (F1 > Racing Display): one page (pageName), or with search set, every
+        /// entry on any page whose text contains all the words searched for, under its page and section names.
+        /// </summary>
+        internal static StackPanel BuildGuide(double s, string pageName, string search = null) => BuildInfo(s, pageName, search);
+
+        private static readonly string[] GuidePageNotes =
+        {
+            "Set up a course and fly your first race: the menu, edit mode, checkpoints, countdown and practice laps.",
+            "Course edit mode and its tool wheel, building a course from grid and antenna names, and how courses are saved with the world and shared.",
+            "The timer panel, the gap to your best, the checkpoint dots, and what each colour means.",
+            "Missed checkpoints, crashes, crash immunity and how penalties show in the lap list.",
+            "Checkpoint markers, the edge arrow, the lap list and splits, race messages and the race-HUD-only mode.",
+            "The minimap, the big Race Map and its switches, and named sectors.",
+            "The ghost and racing line, a 2nd ghost, ghost files and best-lap replays.",
+            "The speed graph, race stats and results after the finish, ship times and records.",
+            "The Racing Display menu's Race, Settings and Controls tabs, and the keys.",
+        };
+
+        /// <summary>The start of the guide in the Help screen: what's on each page.</summary>
+        internal static StackPanel BuildGuideIndex(double s)
         {
             var page = new StackPanel { Margin = new Thickness(0, 0, 0, 12 * s) };
-
-            void Section(string title)
+            var intro = Text("Type above to search the whole guide, or pick one of the topics below Racing Display on the left:", White);
+            intro.TextWrapping = TextWrapping.Wrap;
+            intro.Margin = new Thickness(24 * s, 0, 24 * s, 8 * s);
+            SoftFontSize(intro, 18 * s);
+            page.Children.Add(intro);
+            for (int i = 0; i < GuidePages.Length; i++)
             {
-                page.Children.Add(SectionHeader(title, s));
-                page.Children.Add(new Border { Height = 1, Background = SectionLine, Margin = new Thickness(24 * s, 0, 24 * s, 6 * s) });
+                var g = new Grid { Margin = new Thickness(24 * s, 4 * s, 24 * s, 4 * s) };
+                g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(260 * s, GridUnitType.Pixel)));
+                g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+                var name = Text(GuidePages[i], Brush(HudColor.Cyan));
+                name.FontWeight = FontWeight.Bold;
+                SoftFontSize(name, 18 * s);
+                var note = Text(i < GuidePageNotes.Length ? GuidePageNotes[i] : "", White);
+                note.TextWrapping = TextWrapping.Wrap;
+                SoftFontSize(note, 18 * s);
+                Grid.SetColumn(note, 1);
+                g.Children.Add(name);
+                g.Children.Add(note);
+                page.Children.Add(g);
             }
+            return page;
+        }
+
+        private static StackPanel BuildInfo(double s, string pageName, string search)
+        {
+            var page = new StackPanel { Margin = new Thickness(0, 0, 0, 12 * s) };
+            string[] words = string.IsNullOrWhiteSpace(search) ? null
+                : search.ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (words == null) search = null;
+            string currentPage = null, pendingSection = null, lastHeader = null;
+
+            void Page(string name) { currentPage = name; pendingSection = null; }
+            // A section's header is only added once one of its entries is shown.
+            void Section(string title) => pendingSection = title;
+
+            string SampleText(Control c) => c switch
+            {
+                TextBlock t => t.Text ?? "",
+                Panel p => string.Join(" ", p.Children.Select(SampleText)),
+                _ => "",
+            };
 
             // One line: a sample (icon / colour / word) on the left, the explanation on the right.
             void Line(Control sample, string text)
             {
+                if (search != null)
+                {
+                    if (currentPage != null)
+                    {
+                        string all = ((sample != null ? SampleText(sample) : "") + " " + text + " " + pendingSection + " " + currentPage).ToLowerInvariant();
+                        if (!words.All(w => all.Contains(w))) return;
+                    }
+                }
+                else if (pageName != null && currentPage != pageName) return;
+                bool allPages = search != null || pageName == null;   // page names go in the headers
+                if (currentPage != null && (pendingSection != null || allPages))
+                {
+                    string head = allPages ? currentPage + (pendingSection != null ? " > " + pendingSection : "") : pendingSection;
+                    if (head != lastHeader)
+                    {
+                        page.Children.Add(SectionHeader(head, s));
+                        page.Children.Add(new Border { Height = 1, Background = SectionLine, Margin = new Thickness(24 * s, 0, 24 * s, 6 * s) });
+                        lastHeader = head;
+                    }
+                }
                 var g = new Grid { Margin = new Thickness(24 * s, 4 * s, 24 * s, 4 * s) };
                 g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(170 * s, GridUnitType.Pixel)));
                 g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
@@ -901,14 +980,18 @@ namespace RaceDisplay
                 return sp;
             }
 
+            Page("Getting started");
             Section("Getting started");
-            Line(Word("Menu", HudColor.Cyan), "Press G (the terminal: Character, Grid, Build ... Map) and pick the Racing Display tab after Map, or press J for its Race page. Its tabs (Race, Records, Courses, Settings, Controls) are the ones named below.");
+            Line(Word("Menu", HudColor.Cyan), "Press G (the terminal: Character, Grid, Build ... Map) and pick the Racing Display tab after Map, or press Shift+J for its Race page. Its tabs (Race, Records, Courses, Settings, Controls) are the ones named below.");
             Line(Word("1. Edit mode", HudColor.Orange), "Press Ctrl+F (or Courses tab > Course edit mode). Aim at the ring or arch you've built and left click: it becomes the start/finish gate, fitted to the ring's opening. Right click one to remove it.");
-            Line(Word("2. Checkpoints", HudColor.Orange), "Hold R, pick Checkpoint on the wheel, then left click each checkpoint ring in the order you'll fly them. For a point-to-point course pick Start gate and Finish gate instead of Start/Finish. Press Ctrl+F again when you're done.");
-            Line(Word("3. Race", HudColor.Green), "Fly through the gate to start (the right way, towards the first checkpoint; going through backwards or in the spectator camera doesn't start a race). Each pass through the gate completes a lap. Set the number of laps (and any practice laps) on the Settings tab.");
+            Line(Word("2. Checkpoints", HudColor.Orange), "Hold Shift+R, pick Checkpoint on the wheel, then left click each checkpoint ring in the order you'll fly them. For a point-to-point course pick Start gate and Finish gate instead of Start/Finish. Press Ctrl+F again when you're done.");
+            Line(Word("3. Race", HudColor.Green), "Fly through the gate to start (the right way, towards the first checkpoint; going through backwards or in the spectator camera doesn't start a race; Settings > Race start > Only start going forwards turns the backwards check off). Each pass through the gate completes a lap. Set the number of laps (and any practice laps) on the Race tab (Shift+J).");
             Line(Word("Countdown", HudColor.Yellow), "For a standing start, stop near the gate and hold still: you get 3, 2, 1, GO! The clock starts when you fly through the gate.");
             Line(Word("Practice", HudColor.Yellow), "Practice laps are timed but don't count. The race starts when you finish the last one at the gate.");
 
+            Page("Building courses");
+            Section("Course edit mode");
+            Line(Word("Course edit mode", HudColor.Orange), "Ctrl+F (or Courses tab) turns it on. It also switches the game's debug draw on, so the gate and checkpoint boxes show (it's put back when you leave edit mode). Aim at a grid and left click to set it as the start / finish gate or the next checkpoint (it's outlined while you aim); right click a gate or checkpoint to remove it. Hold Shift+R for the tool wheel (Start/Finish, Start gate, Finish gate, Checkpoint; the current one is tinted in its colour): the cursor appears and the view stays still; point at a tool and let go (or click one). Shift+T changes the placement mode, shown at the top of the timer panel: On a grid (aim at a ring and click), Pick blocks (like the game's partial copy: left click one corner block, then the opposite corner block on the same grid, and the box between them, both included, becomes the gate or checkpoint; it's outlined as you aim, and right click clears the first corner) or In the air (in open air ahead of you; grow / shrink keys change the size). Shift+L shows or hides your best lap line. Ctrl+U / Ctrl+Shift+U undo and redo course edits. Gates, checkpoints and the route between them (white lines with arrows and leg lengths) are always shown while editing, and the COURSE panel lists the type, length, each leg and anything worth fixing (checkpoints very close together, a ring turned side-on to the route). With a separate finish gate the course is point-to-point: one run from the start gate to the finish gate.");
             Section("Auto-build from names");
             Line(Word("How", HudColor.Cyan), "Name the grids you've built for your course, then Courses tab > Build > Auto-build. The plugin looks through every grid in the world (and the antennas on them) and builds the course from the names: the start / finish gate and the checkpoints in number order, each fitted to its ring opening (Settings > Fit to ring opening). It replaces the current gate and checkpoints.");
             Line(Word("Start / Finish", HudColor.Cyan), "A grid or antenna with \"Start\" or \"Finish\" anywhere in its name (Start, Finish, Start/Finish, Start gate...) becomes the start / finish gate. Only one is used, and the course is a circuit: add a separate finish gate afterwards in edit mode for a point-to-point course. If none is found the old gate is kept.");
@@ -916,6 +999,10 @@ namespace RaceDisplay
             Line(Word("Naming", HudColor.White), "Rename a grid in its terminal (the grid's name), or give an antenna on it the name: handy when one big structure holds several rings, each with its own antenna. A grid's first name that fits decides what it is. Antenna names also show as markers on the HUD: Courses tab > Turn all off hides them.");
             Line(Word("Then", HudColor.Green), "Check the route in edit mode (Ctrl+F), fix anything with the tools, save it as a named course if you like, then save the game: courses are kept in the world's own save.");
 
+            Section("Saving and sharing");
+            Line(Word("Courses", HudColor.White), "The Courses tab saves and loads courses, changes the checkpoint order, builds a course from grids or antennas named Start / CP1 / CP2..., and can switch every antenna in the world off or on.");
+            Line(Word("World save", HudColor.Cyan), "Courses belong to the world they're made in. They're written into the world's save folder (RaceDisplayCourses.json) every time you save the game, and loaded with the world, so they never show up in other worlds. Publish the world and players who download it, and have this plugin, get the course set up automatically (a new world started from a Workshop download finds the course from the Workshop copy).");
+            Page("Timer and colours");
             Section("Timer panel");
             Line(Word("LAP 2 / 3", HudColor.White), "The lap you're on, and checkpoints reached this lap. The big number is this lap's time; TOTAL underneath is the race time so far, with penalties.");
             Line(Row(Word("-1.204", HudColor.Green), Word("+0.380", HudColor.Red)), "Gap to your best lap on this course: green means ahead of it, red means behind. Once you've set a best lap it updates all the time as you fly; before that, at each checkpoint.");
@@ -934,34 +1021,56 @@ namespace RaceDisplay
             Line(Row(Dot(HudColor.Purple, HudColor.Purple, false), Dot(HudColor.Green, HudColor.Green, false), Dot(HudColor.Yellow, HudColor.Yellow, false)),
                 "Sector colours: each checkpoint dot under the timer takes the colour of the sector you just flew, like F1 timing: purple = fastest ever on this course, green = your best this race, yellow = slower. Settings > Display > Sector colours.");
 
+            Page("Penalties");
             Section("Penalties");
             Line(Row(Word("+5s", HudColor.Red), Dot(HudColor.Red, HudColor.Red, true)), "Missed checkpoint: you flew through a later checkpoint without this one. You get a red MISSED message straight away and its split shows MISSED. The penalty (5 s by default) is added to the lap.");
             Line(Row(Word("+5s", HudColor.Red), Cross()), "Crash: a sudden hard stop while going fast (20 m/s or more by default). The timer flashes red and the penalty is added to the lap.");
+            Line(Word("Immunity", HudColor.Yellow), "After a crash penalty there's no other crash penalty for 5 s (Settings > Penalties > Crash immunity, up to 60 s, 0 = off), so bouncing off a wall or tumbling only counts once. The crash message says how long it lasts.");
             Line(Word("+10s", HudColor.Red), "In the lap list, each lap shows its total penalty, then one ring per missed checkpoint and one cross per crash. Penalty sizes and crash sensitivity are on the Settings tab.");
 
-            Section("Markers and panels");
+            Page("HUD and markers");
+            Section("Markers");
             Line(Word("CP 3  1.2 km", HudColor.Orange), "Each checkpoint has a label on screen. The one to fly to next is bigger, brighter and shows how far away it is. Ones you've flown through turn green and missed ones red.");
             Line(Word("START / FINISH", HudColor.Cyan), "The start/finish gate (or START and a purple FINISH on a point-to-point course). It shows its distance when it's where you're heading (before the race and after the last checkpoint).");
             Line(Arrow(), "When the next checkpoint is off screen or behind you, an arrow at the edge of the screen points to it.");
+            Section("Panels");
             Line(Word("LAPS", HudColor.White), "Lap list (left): every lap time, your best this race in green. After the finish the results appear under it.");
             Line(Word("SPLITS", HudColor.White), "Splits (right): for each checkpoint this lap, the gap to your best lap, the SECTOR time (from the previous checkpoint) and the lap time. After the finish it shows every lap side by side (sector times, or lap times if you switch that off), with top and average speed.");
-            Line(Word("BEST LAP", HudColor.Purple), "The ghost (labelled BEST LAP) is where your best lap was at this moment of the lap: a see-through copy of the ship that set it, flying with the same heading and roll (or a purple diamond if you turn the projection off). Ahead of you = you're behind your best; behind you = you're ahead. The magenta racing line is your best lap's path. A best lap set before this version has no recorded heading, so set a new one to see the ghost ship.");
+            Section("Messages and HUD modes");
+            Line(Word("Race messages", HudColor.Yellow), "GO!, checkpoints, laps, missed checkpoints and crashes drop down in a tab under the timer (long ones wrap onto a second line). Setup messages (gate placed and so on) show in the middle of the screen.");
+            Line(Word("Race HUD only", HudColor.Cyan), "The game's HUD key (U) has an extra step: after the minimal HUD it hides the game's own HUD and flight HUD and shows only the race HUD; press U again to carry on to no HUD. Settings > Display > Race HUD only turns it on or off directly.");
+            Page("Minimap and Race Map");
+            Section("Maps");
+            Line(Word("Minimap", HudColor.Cyan), "Round, in the top left corner (top right with swapped sides), showing the whole course. With Settings > Minimap > Minimap zooms in while moving on (off by default) it zooms in and follows you from 20 m/s, and zooms back out as you slow down. The next checkpoint pulses (with a dashed line from you to it); missed checkpoints are red. Each gate and checkpoint has a label, and the racing line uses its racing line colours; start gate facing up. Dashed route between the gates and checkpoints (next one orange, flown ones green), named sectors as coloured bands, the best lap's line, you (arrow) and the ghosts. Settings > Minimap.");
+            Line(Word("Race Map", HudColor.Cyan), "G > Map > Race Map: a big version of the minimap. The switches above it (Sectors, Checkpoints, Labels, Route, Racing line, Ghosts, You) hide or show those on the Race Map and the minimap alike, and are remembered.");
+            Line(Word("Sectors", HudColor.Green), "Courses tab > Sectors: name parts of the course (e.g. \"Hairpin\", from CP 3 to CP 5). Each shows on the minimap and Race Map as a coloured band with its name, and is saved with the course.");
+            Page("Ghosts and replays");
+            Section("Ghosts");
+            Line(Word("BEST LAP", HudColor.Purple), "The ghost (labelled BEST LAP) is where your best lap was at this moment of the lap: an outline of the ship that set it, flying with the same heading and roll (or a purple diamond with Settings > Ghost and replay > Ghost as ship projection off). Ahead of you = you're behind your best; behind you = you're ahead. The magenta racing line is your best lap's path. The Race tab (Shift+J) picks whose lap it is: your course best, a ship's best or a ghost file.");
             Line(Word("Racing line", HudColor.Yellow), "The best lap's line is coloured to show where time is won and lost (Settings > Display > Racing line colours). Speed: red where it was slow, yellow, green where it was fastest. Braking: red where it was slowing down (harder = redder), green where it was speeding up, white where it held its speed. Plain: magenta.");
-            Line(Word("Minimap", HudColor.Cyan), "Round, in the top corner. From 20 m/s it zooms in and follows you; slower than that it gradually zooms out, to the whole course when you stop. The next checkpoint pulses (with a dashed line from you to it); missed checkpoints are red. Each gate and checkpoint has a label, and the racing line uses its racing line colours; start gate facing up. Dashed route between the gates and checkpoints (next one orange, flown ones green), the best lap's line, you (arrow) and the ghosts. Settings > Minimap.");
             Line(Word("2nd ghost", HudColor.Orange), "Records tab > 2nd ghost (on a ship's row or a ghost file) adds a second, orange ghost that flies at the same time as the main one, in races and in replays: e.g. your best against another ship's best. Its racing line shows too, in orange, and the main line turns purple so you can tell them apart. Press it again to turn it off.");
-            Line(Word("Replay", HudColor.Purple), "Records tab > Watch best lap (or the replay shortcut): the spectator camera follows the ghost of your ship round your best lap at real speed, then puts you back in your seat. Racing is paused while it plays. The camera orbits the ghost by default: move the mouse to swing round it, W / S to zoom; Ctrl+Shift+C switches to a fixed chase camera. Replays use the game's cinematic spectator (smooth movement, and its look-around keys let you aim away from the ghost); turn that off in Settings > Ghost and replay. Settings > Ghost and replay > Ghost looks like my ship draws the ghost as the ship you're flying.");
+            Line(Word("Ghost files", HudColor.Purple), "Records tab > Ghost files: export your best lap (course best, or a ship's best) as a file to share, and load other players' files from the ghosts folder. Watch replays one with the spectator camera; Race makes the ghost, racing line and live gap follow it instead of your own best. A ghost only fits the course it was flown on.");
+            Section("Replays");
+            Line(Word("Replay", HudColor.Purple), "Records tab > Watch best lap (or the replay shortcut): the spectator camera follows the ghost of your ship round your best lap at real speed, then puts you back in your seat. Racing is paused while it plays. The camera orbits the ghost by default: move the mouse to swing round it, W / S to zoom; Ctrl+Shift+C switches to a fixed chase camera. Replays use the game's cinematic spectator (smooth movement, and its look-around keys let you aim away from the ghost); turn that off in Settings > Ghost and replay.");
+            Page("Results and records");
+            Section("After the race");
             Line(Word("Speed graph", HudColor.Green), "In the results: your speed round the lap (start on the left, finish on the right) for your best lap this race and the course record, so you can see where you lost speed. Dashed lines with numbers mark the checkpoints, and a dot on each line shows where that lap went through them.");
             Line(Word("Race stats", HudColor.White), "After the finish the splits table adds G-forces per lap (G MAX = hardest cornering, G AVG = average cornering, BRAKE = hardest slowing down) and distance flown per lap (shortest in green). A separate RACE STATS box in the top corner shows the ship, how you did against its best, total distance, time at top speed, average lap and consistency (best to worst lap spread); turn it off in Settings > Display. G-forces come from the ship's change of velocity, so impacts over 30 g are left out.");
             Line(Word("Results", HudColor.Yellow), "The race results can compare with the best on the course (any ship) or the best in the ship you flew: press Ctrl+B (Controls tab: Results: overall / this ship) while they're showing to switch, or set it in Settings > Display. In ship mode the headline, best lap colour, possible lap and the graph all use that ship's own bests.");
-            Line(Word("Ghost files", HudColor.Purple), "Records tab > Ghost files: export your best lap (course best, or a ship's best) as a file to share, and load other players' files from the ghosts folder. Watch replays one with the spectator camera; Race makes the ghost, racing line and live gap follow it instead of your own best. A ghost only fits the course it was flown on.");
+            Section("Records");
             Line(Word("Ships", HudColor.Cyan), "Every race saves times for the ship you flew, by its name. Records tab > Ships on this course compares them: fastest in purple, the others with their gap in yellow. Rename a ship in its terminal to keep separate times for each version.");
-            Line(Word("Course edit mode", HudColor.Orange), "Ctrl+F (or Courses tab) turns it on. It also switches the game's debug draw on, so the gate and checkpoint boxes show (it's put back when you leave edit mode). Aim at a grid and left click to set it as the start / finish gate or the next checkpoint (it's outlined while you aim); right click a gate or checkpoint to remove it. Hold R for the tool wheel: the cursor appears and the view stays still; point at a tool and let go (or click one). In the air (a switch on the wheel, orange when on) makes every tool place its gate or checkpoint in open air ahead of you instead of on a grid (grow / shrink keys change the size). Racing line shows or hides your best lap line. Ctrl+U / Ctrl+Shift+U undo and redo course edits. Gates, checkpoints and the route between them (white lines with arrows and leg lengths) are always shown while editing, and the COURSE panel lists the type, length, each leg and anything worth fixing (checkpoints very close together, a ring turned side-on to the route). With a separate finish gate the course is point-to-point: one run from the start gate to the finish gate.");
-            Line(Word("World save", HudColor.Cyan), "Courses belong to the world they're made in. They're written into the world's save folder (RaceDisplayCourses.json) every time you save the game, and loaded with the world, so they never show up in other worlds. Publish the world and players who download it, and have this plugin, get the course set up automatically.");
-            Line(Word("Courses", HudColor.White), "The Courses tab saves and loads courses, changes the checkpoint order, builds a course from grids or antennas named Start / CP1 / CP2..., and can switch every antenna in the world off or on.");
             Line(Word("Records", HudColor.Yellow), "The Records tab lists your best 5 races on this course for each number of laps, and has the reset buttons.");
-            Line(Word("Race", HudColor.Green), "Press J (or the Race tab) to set the laps and practice laps and pick whose lap you race against: your course best, any ship's best lap on this course, or a ghost file. Speeds use the game's speed unit (Options > Interface).");
-            Line(Word("Settings", HudColor.White), "Hide panels, swap sides, turn markers, the arrow or sounds off, and change penalties, distances and sizes on the Settings tab.");
+            Page("Menu, settings and keys");
+            Section("Racing Display menu");
+            Line(Word("Race", HudColor.Green), "Press Shift+J (or the Race tab) to set the laps and practice laps and pick whose lap you race against: your course best, any ship's best lap on this course, or a ghost file. Speeds use the game's speed unit (Options > Interface).");
+            Line(Word("Settings", HudColor.White), "Hide panels, swap sides, turn markers, the arrow or sounds off, and change penalties, distances and sizes on the Settings tab. The search box at the top finds a setting by name or description; point at a setting to see what it does. Panels use the game's UI background opacity (Options > Interface) unless you turn Panel darkness: use the game's off.");
+            Line(Word("Controls", HudColor.White), "The Controls tab lists every key and lets you change them: click one, then press the new key combination (Esc cancels); keys used by two actions show in red. Single keys use Shift: Shift+J for race setup, Shift+R (hold) for the edit tool wheel.");
 
+            if (search != null && page.Children.Count == 0)
+            {
+                Page(null);
+                Line(null, "Nothing found. Try another word, or pick a topic on the left.");
+            }
             return page;
         }
 
@@ -1054,7 +1163,7 @@ namespace RaceDisplay
             Header("Course edit mode");
             courseRows.Children.Add(OptionRow("Course edit mode",
                 $"Turn it on ({p.EditModeKey}), close the menu, then aim at a grid and left click to make it the start / finish gate or the next checkpoint; right click one to remove it. "
-                + $"Hold {p.EditWheelKey} for the tool wheel (start / finish gate, start gate, finish gate, checkpoint): the cursor appears, point at one and let go (or click it). A separate finish gate makes a point-to-point course (one run, start to finish). No racing while it's on.",
+                + $"Hold {p.EditWheelKey} for the tool wheel (start / finish gate, start gate, finish gate, checkpoint): the cursor appears, point at one and let go (or click it). Shift+T changes the placement mode: on a grid, pick blocks (two corner blocks) or in the air. A separate finish gate makes a point-to-point course (one run, start to finish). No racing while it's on.",
                 Buttons(Widen(ValueButton(p.EditMode ? "Turn off" : "Turn on", White, 0, () => commands.Enqueue(new MenuCommand(MenuAction.ToggleEditMode)))))));
 
             courseRows.Children.Add(OptionRow("Reverse course",

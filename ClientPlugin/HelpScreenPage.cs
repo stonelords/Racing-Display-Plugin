@@ -12,8 +12,8 @@ using HarmonyLib;
 namespace RaceDisplay
 {
     /// <summary>
-    /// Adds a "Racing Display" topic to the game's Help screen (F1), under "Controls", holding the
-    /// plugin's guide (what used to be the Info tab of the Racing Display menu).
+    /// Adds a "Racing Display" topic to the game's Help screen (F1), under "Controls": a search over the
+    /// plugin's guide, followed in the list by a topic for each part of the plugin (getting started, building courses...).
     ///
     /// The Help screen (Keen.Game2.Client.UI.Library.Help.HelpScreen) fills its TreeView (PART_TreeView)
     /// with HelpScreenTopic objects in its constructor. Each topic has a Header (a text key, shown through
@@ -49,50 +49,111 @@ namespace RaceDisplay
             catch (Exception e) { PluginLog.Error("Couldn't patch the Help screen", e); }
         }
 
+        // Our topics and the titles to show for them (the tree would otherwise look their headers up as text keys).
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, string> titles =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<object, string>();
+
+        private static object NewTopic(string title, Control content, bool indent = false)
+        {
+            var topic = Activator.CreateInstance(topicType);
+            topicType.GetProperty("Header")?.SetValue(topic, title);
+            if (topicType.GetProperty("Content")?.GetValue(topic) is IList list) list.Add(content);
+            // Topics that belong to Racing Display are shown indented under it (non-breaking spaces, so they're kept).
+            titles.AddOrUpdate(topic, indent ? "\u00A0\u00A0\u00A0\u00A0" + title : title);
+            return topic;
+        }
+
         private static void HelpScreenCreated(object __instance)
         {
             try
             {
                 if (!(AccessTools.Field(__instance.GetType(), "PART_TreeView")?.GetValue(__instance) is TreeView tree)) return;
 
-                var topic = Activator.CreateInstance(topicType);
-                topicType.GetProperty("Header")?.SetValue(topic, Title);
-                if (!(topicType.GetProperty("Content")?.GetValue(topic) is IList content)) return;
-                content.Add(new GuideHost(topic));
+                // "Racing Display": a search over the whole guide, then a topic for each part of the plugin,
+                // all listed in the tree (straight after "Controls", header key "HelpControls", or at the end).
+                object topic = null;
+                topic = NewTopic(Title, new GuideHost(() => topic, s => SearchPage(s)));
+                var all = new System.Collections.Generic.List<object> { topic };
+                foreach (var name in RacingMenu.GuidePages)
+                {
+                    object sub = null;
+                    string pageName = name;
+                    sub = NewTopic(name, new GuideHost(() => sub, s => RacingMenu.BuildGuide(s, pageName)), indent: true);
+                    all.Add(sub);
+                }
 
-                // Straight after "Controls" (header key "HelpControls"), or at the end.
                 int at = tree.Items.Count;
                 for (int i = 0; i < tree.Items.Count; i++)
                     if (topicType.IsInstanceOfType(tree.Items[i]) && (topicType.GetProperty("Header")?.GetValue(tree.Items[i]) as string) == "HelpControls")
                         at = i + 1;
-                tree.Items.Insert(at, topic);
+                foreach (var t in all) tree.Items.Insert(at++, t);
 
-                // The tree shows headers through the game's localisation, which doesn't know our name:
-                // once the rows exist, put the plain title on ours.
-                void FixHeader() => Dispatcher.UIThread.Post(() => SetHeaderText(tree, topic), DispatcherPriority.Background);
-                tree.Loaded += (_, __) => FixHeader();
-                tree.SelectionChanged += (_, __) => FixHeader();
+                // The tree shows headers through the game's localisation, which doesn't know our names: whenever
+                // rows appear (opening, expanding Racing Display), put the plain titles on ours.
+                bool queued = false;
+                void FixHeaders()
+                {
+                    if (queued) return;
+                    queued = true;
+                    Dispatcher.UIThread.Post(() => { queued = false; SetHeaderTexts(tree); }, DispatcherPriority.Background);
+                }
+                tree.Loaded += (_, __) => FixHeaders();
+                tree.SelectionChanged += (_, __) => FixHeaders();
+                tree.LayoutUpdated += (_, __) => { if (!tree.IsEffectivelyVisible) return; FixHeaders(); };
             }
             catch (Exception e) { PluginLog.Error("Couldn't add the Racing Display topic to the Help screen", e); }
         }
 
-        private static void SetHeaderText(TreeView tree, object topic)
+        /// <summary>The Racing Display page: a search box, then what matches (or, before searching, the list of pages).</summary>
+        private static Control SearchPage(double s)
         {
+            var results = new ContentControl();
+            var box = new TextBox
+            {
+                Watermark = "Search the Racing Display guide",
+                VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                Margin = new Thickness(24 * s, 4 * s, 24 * s, 8 * s),
+            };
+            DispatcherTimer wait = null;
+            void Show()
+            {
+                string q = box.Text?.Trim();
+                results.Content = !string.IsNullOrEmpty(q) ? RacingMenu.BuildGuide(s, null, q) : RacingMenu.BuildGuideIndex(s);
+            }
+            // Searched a moment after typing stops, not on every key.
+            box.TextChanged += (_, __) =>
+            {
+                wait?.Stop();
+                wait = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (t, e2) => { ((DispatcherTimer)t).Stop(); Show(); });
+                wait.Start();
+            };
+            Show();
+            return new StackPanel { Children = { box, results } };
+        }
+
+        private static int fixing;
+
+        private static void SetHeaderTexts(TreeView tree)
+        {
+            if (fixing > 0) return;
+            fixing++;
             try
             {
                 foreach (var item in tree.GetVisualDescendants().OfType<TreeViewItem>())
                 {
-                    if (!ReferenceEquals(item.DataContext, topic) && !ReferenceEquals(item.Header, topic)) continue;
+                    object data = item.DataContext ?? item.Header;
+                    if (data == null || !titles.TryGetValue(data, out var title)) continue;
                     foreach (var t in item.GetVisualDescendants().OfType<TextBlock>())
                     {
                         // Only the row's own text, not anything in nested rows.
                         if (t.FindAncestorOfType<TreeViewItem>() != item) continue;
-                        if (t.Text != Title) t.Text = Title;
+                        if (t.Text != title) t.Text = title;
                         break;
                     }
                 }
             }
-            catch (Exception e) { PluginLog.Error("Couldn't set the Racing Display help title", e); }
+            catch (Exception e) { PluginLog.Error("Couldn't set the Racing Display help titles", e); }
+            finally { fixing--; }
         }
 
         /// <summary>
@@ -101,16 +162,18 @@ namespace RaceDisplay
         /// </summary>
         private sealed class GuideHost : ScrollViewer
         {
-            private readonly object topic;
+            private readonly Func<object> topicOf;
+            private readonly Func<double, Control> build;
             private double builtScale;
             private ContentPresenter panel;
 
             // Use the game's ScrollViewer look (styles go by type).
             protected override Type StyleKeyOverride => typeof(ScrollViewer);
 
-            public GuideHost(object topic)
+            public GuideHost(Func<object> topic, Func<double, Control> build)
             {
-                this.topic = topic;
+                topicOf = topic;
+                this.build = build;
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
                 HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch;
@@ -126,12 +189,13 @@ namespace RaceDisplay
                     double s = h > 0 ? Math.Max(0.75, Math.Min(2.0, h / 1080.0)) : 1.0;
                     if (Content == null || Math.Abs(s - builtScale) > 0.01)
                     {
-                        Content = RacingMenu.BuildGuide(s);
+                        Content = build(s);
                         builtScale = s;
                     }
 
                     // The topic's items sit in a stack (unlimited height), so limit our height to the
                     // right-hand panel ourselves; otherwise the guide would run off the bottom.
+                    var topic = topicOf();
                     panel = this.GetVisualAncestors().OfType<ContentPresenter>().FirstOrDefault(p => ReferenceEquals(p.Content, topic));
                     bool outerScroll = panel != null && panel.GetVisualAncestors().TakeWhile(v => !(v is TopLevel)).OfType<ScrollViewer>().Any();
                     if (panel != null && !outerScroll)

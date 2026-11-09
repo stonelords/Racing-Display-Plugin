@@ -66,7 +66,6 @@ namespace RaceDisplay
         private readonly List<Border> mmLabels = new List<Border>();
         private Canvas mmSectors;   // named sectors: wide see-through bands
         private readonly List<(string Name, HudColor Colour, Point Mid, Vector Normal)> mmSectorInfo = new List<(string, HudColor, Point, Vector)>();
-        private readonly List<Control> mmSectorTags = new List<Control>();
         private Canvas mmSegs;   // the racing line as coloured segments (speed / braking colours)
         private Canvas mmContent; // route + lines, scaled / moved for zoom and follow
         private Ellipse mmBack;   // the round background
@@ -77,6 +76,14 @@ namespace RaceDisplay
         private DispatcherTimer mmPulseTimer;
         private readonly List<Ellipse> mmGhosts = new List<Ellipse>();
         private string mmDrawn;
+        private double mmClipSize = -1;
+        private long mmUpdatedAt;
+        private ScaleTransform mmRingScale;   // made on the UI thread when first needed
+        private string mmLabelsSig;   // what the labels were last placed for
+        private long mmLinesAt;                 // when the lines were last redrawn (they're redrawn at most ~30 times a second)
+        private RotateTransform mmPlayerTurn;   // made on the UI thread when first needed (Avalonia objects belong to it)
+        private readonly List<Path> mmSectorBands = new List<Path>();
+        private readonly List<Border> mmSectorTagPool = new List<Border>();
         private TextBlock lapsHeader;
         private StackPanel lapRows;
         private Border centreBox;
@@ -154,11 +161,13 @@ namespace RaceDisplay
                     return;
                 }
 
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 string sig = model.Signature();
                 root.IsVisible = true;
-                if (sig == lastSignature) return;
+                if (sig == lastSignature) { PluginLog.Time("hud check", (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency); return; }
                 lastSignature = sig;
                 Update(model);
+                PluginLog.Time("hud update", (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
             }
             catch (Exception e)
             {
@@ -185,7 +194,9 @@ namespace RaceDisplay
 
         // ---------------------------------------------------------------- look
 
-        private static IBrush Brush(HudColor c) => new SolidColorBrush(Color.FromArgb(c.A, c.R, c.G, c.B));
+        // One brush per colour, reused: handing a control a new (if identical) brush every frame makes it redraw.
+        private static IBrush Brush(HudColor c) => UiBrushes.Of(c);
+        private static IBrush Brush(byte a, byte r, byte g, byte b) => UiBrushes.Get(a, r, g, b);
 
         // Matches the game's SPD/ALT boxes: near-black panel, thin bright border, small rounded corners.
         private static readonly IBrush BorderBrush = new SolidColorBrush(Color.FromArgb(230, 235, 238, 240));
@@ -518,7 +529,8 @@ namespace RaceDisplay
             minimapCanvas.Children.Add(mmContent);
             // A faint line from you to the next checkpoint, and a pulsing ring round it.
             mmToNext = new Line { Stroke = new SolidColorBrush(Color.FromArgb(140, 255, 160, 40)), StrokeThickness = 1.5 * s, StrokeDashArray = new AvaloniaList<double> { 3, 3 }, ZIndex = 30, IsVisible = false };
-            mmRing = new Ellipse { Stroke = Brush(HudColor.Orange), StrokeThickness = 2 * s, ZIndex = 35, IsVisible = false };
+            mmRing = new Ellipse { Stroke = Brush(HudColor.Orange), StrokeThickness = 2 * s, ZIndex = 35, IsVisible = false,
+                RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative) };
             minimapCanvas.Children.Add(mmToNext);
             minimapCanvas.Children.Add(mmRing);
             // Arrow pointing up, centred in a 16 x 16 box so it turns about its middle.
@@ -534,7 +546,11 @@ namespace RaceDisplay
             mmPoints.Clear();
             mmLabels.Clear();
             mmGhosts.Clear();
-            mmDrawn = null;
+            mmSectorBands.Clear();
+            mmSectorTagPool.Clear();
+            mmDrawn = mmLabelsSig = null;
+            mmClipSize = -1;
+            mmRingScale = null;
             // The round background is an ellipse drawn in the canvas itself (a rounded border only makes a
             // rounded square), and the canvas is clipped to the same circle.
             mmBack = new Ellipse { Stroke = BorderBrush, StrokeThickness = 1.5 * s, ZIndex = -10 };
@@ -546,12 +562,11 @@ namespace RaceDisplay
             mmPulseTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(33), DispatcherPriority.Background, (_, __) =>
             {
                 if (mmRing == null || !mmRing.IsVisible) return;
+                // Grows by scaling (no layout pass), placed by the minimap update.
                 double phase = (Environment.TickCount64 % 1200) / 1200.0;
-                double d = mmRingBase * (1 + 0.9 * phase);
-                mmRing.Width = d; mmRing.Height = d;
+                if (mmRingScale == null) mmRing.RenderTransform = mmRingScale = new ScaleTransform();
+                mmRingScale.ScaleX = mmRingScale.ScaleY = 1 + 0.9 * phase;
                 mmRing.Opacity = 1 - phase;
-                Canvas.SetLeft(mmRing, mmRingAt.X - d / 2);
-                Canvas.SetTop(mmRing, mmRingAt.Y - d / 2);
             });
             mmPulseTimer.Start();
             return minimapBox;
@@ -560,7 +575,11 @@ namespace RaceDisplay
         private void UpdateMinimap(HudModel.MinimapPanel mm, double s, IBrush fill)
         {
             minimapBox.IsVisible = mm != null;
-            if (mm == null) { mmRing.IsVisible = false; return; }
+            if (mm == null) { mmRing.IsVisible = false; mmUpdatedAt = 0; return; }
+            // At most ~30 updates a second (plenty for a small map); a skipped one is caught up on the next frame.
+            long nowMs = Environment.TickCount64;
+            if (mmDrawn != null && mmDrawn.StartsWith(mm.StaticSig + "|") && nowMs - mmUpdatedAt < 33) { lastSignature = null; return; }
+            mmUpdatedAt = nowMs;
             double size = mm.Size * s;
             minimapBox.Width = size;
             minimapBox.Height = size;
@@ -572,8 +591,12 @@ namespace RaceDisplay
             mmBack.Width = size; mmBack.Height = size;
             mmBack.Fill = fill;
             Canvas.SetLeft(mmBack, 0); Canvas.SetTop(mmBack, 0);
-            minimapCanvas.Clip = new EllipseGeometry(new Rect(0, 0, size, size));
-            minimapBox.Clip = new EllipseGeometry(new Rect(0, 0, size, size));
+            if (size != mmClipSize)
+            {
+                mmClipSize = size;
+                minimapCanvas.Clip = new EllipseGeometry(new Rect(0, 0, size, size));
+                minimapBox.Clip = new EllipseGeometry(new Rect(0, 0, size, size));
+            }
             // Everything drawn on the map stays inside its circle (the clip alone isn't always applied).
             double radius = size / 2 - 2 * s;
             bool InCircle(double x, double y, double margin)
@@ -592,10 +615,15 @@ namespace RaceDisplay
             // apply clips to them reliably). Only redone when the view or the lines change.
             // The Race Map's switches (sectors, checkpoints, labels, route, racing line, ghosts, you) apply here too.
             var opt = MapOptions.Current;
-            string viewSig = $"{mm.StaticSig}|{mm.ViewX:0.0000}|{mm.ViewY:0.0000}|{span:0.0000}|{size:0}|{opt.Sectors}{opt.Route}{opt.RacingLine}";
-            if (viewSig != mmDrawn)
+            // The view to the nearest pixel (and half a percent of zoom): smaller moves don't redraw the lines.
+            string viewSig = $"{mm.StaticSig}|{Math.Round(mm.ViewX / span * size)}|{Math.Round(mm.ViewY / span * size)}|{Math.Round(Math.Log(span) * 200)}|{size:0}|{opt.Sectors}{opt.Route}{opt.RacingLine}";
+            bool linesChanged = mmDrawn == null || !mmDrawn.StartsWith(mm.StaticSig + "|");
+            long nowTicks = Environment.TickCount64;
+            bool viewChanged = viewSig != mmDrawn && (linesChanged || nowTicks - mmLinesAt >= 33);
+            if (viewSig != mmDrawn && !viewChanged) lastSignature = null;   // skipped for now: redraw on the next frame
+            if (viewChanged)
             {
-                bool linesChanged = mmDrawn == null || !mmDrawn.StartsWith(mm.StaticSig + "|");
+                mmLinesAt = nowTicks;
                 mmDrawn = viewSig;
                 double cx0 = size / 2, cy0 = size / 2, rad = size / 2 - 2 * s;
 
@@ -603,6 +631,9 @@ namespace RaceDisplay
                 bool Clip(Point a, Point b, out Point ca, out Point cb)
                 {
                     ca = a; cb = b;
+                    // Both ends off the same side of the map: nothing to draw (most of the course when zoomed in).
+                    if ((a.X < cx0 - rad && b.X < cx0 - rad) || (a.X > cx0 + rad && b.X > cx0 + rad)
+                        || (a.Y < cy0 - rad && b.Y < cy0 - rad) || (a.Y > cy0 + rad && b.Y > cy0 + rad)) return false;
                     double dx = b.X - a.X, dy = b.Y - a.Y, fx = a.X - cx0, fy = a.Y - cy0;
                     double qa = dx * dx + dy * dy, qb = 2 * (fx * dx + fy * dy), qc = fx * fx + fy * fy - rad * rad;
                     if (qa < 1e-9) return qc <= 0;
@@ -646,18 +677,20 @@ namespace RaceDisplay
                 }
 
                 // Named sectors under everything else: a wide see-through band along the route, and the name.
-                mmSectors.Children.Clear();
                 mmSectorInfo.Clear();
-                foreach (var sec in opt.Sectors ? mm.Sectors : new List<(List<(double X, double Y)> Points, string Name, HudColor Colour)>())
+                var secs = opt.Sectors ? mm.Sectors : new List<(List<(double X, double Y)> Points, string Name, HudColor Colour)>();
+                while (mmSectorBands.Count < secs.Count)
                 {
-                    mmSectors.Children.Add(new Path
-                    {
-                        Data = Cut(sec.Points, false),
-                        Stroke = Brush(sec.Colour.WithAlpha(90)),
-                        StrokeThickness = 9 * s,
-                        StrokeLineCap = PenLineCap.Round,
-                        StrokeJoin = PenLineJoin.Round,
-                    });
+                    var band = new Path { StrokeThickness = 9 * s, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round };
+                    mmSectorBands.Add(band);
+                    mmSectors.Children.Add(band);
+                }
+                for (int k = 0; k < mmSectorBands.Count; k++) mmSectorBands[k].IsVisible = k < secs.Count;
+                for (int k = 0; k < secs.Count; k++)
+                {
+                    var sec = secs[k];
+                    mmSectorBands[k].Data = Cut(sec.Points, false);
+                    mmSectorBands[k].Stroke = Brush(sec.Colour.WithAlpha(90));
                     // Where its name goes is worked out with the other labels (below), clear of the checkpoints.
                     var pts = sec.Points.ConvertAll(q => T(q.X, q.Y));
                     var (mid, normal) = LabelPlacer.Halfway(pts, new Point(size / 2, size / 2));
@@ -668,28 +701,44 @@ namespace RaceDisplay
                 mmLine.Data = Cut(mm.Line, false);
                 mmLine2.Data = Cut(mm.Line2, false);
 
-                // Coloured racing line: one short line per segment in its colour, cut to the circle.
-                if (linesChanged)
+                // Coloured racing line: segments grouped by colour (rounded to a few shades), one path per
+                // colour, cut to the circle. A handful of shapes instead of hundreds of separate lines.
+                var groups = new Dictionary<uint, List<(Point A, Point B)>>();
+                for (int i = 0; i + 1 < mm.Line.Count && i < mm.LineColours.Count; i++)
                 {
-                    mmSegs.Children.Clear();
-                    if (mm.LineColours.Count > 0)
-                        for (int i = 0; i + 1 < mm.Line.Count && i < mm.LineColours.Count; i++)
-                            mmSegs.Children.Add(new Line
-                            {
-                                Stroke = Brush(mm.LineColours[i].WithAlpha(255)),
-                                StrokeLineCap = PenLineCap.Round,
-                                StrokeThickness = 3 * s,
-                            });
+                    if (!Clip(T(mm.Line[i].X, mm.Line[i].Y), T(mm.Line[i + 1].X, mm.Line[i + 1].Y), out var a, out var b)) continue;
+                    var c = mm.LineColours[i];
+                    uint key = (uint)(c.R & 0xF0) << 16 | (uint)(c.G & 0xF0) << 8 | (uint)(c.B & 0xF0);
+                    if (!groups.TryGetValue(key, out var list)) groups[key] = list = new List<(Point, Point)>();
+                    list.Add((a, b));
                 }
-                for (int i = 0; i < mmSegs.Children.Count && i + 1 < mm.Line.Count; i++)
+                int used = 0;
+                foreach (var kv in groups)
                 {
-                    var ln = (Line)mmSegs.Children[i];
-                    if (Clip(T(mm.Line[i].X, mm.Line[i].Y), T(mm.Line[i + 1].X, mm.Line[i + 1].Y), out var a, out var b))
+                    if (used >= mmSegs.Children.Count)
+                        mmSegs.Children.Add(new Path { StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round, StrokeThickness = 3 * s });
+                    var path = (Path)mmSegs.Children[used++];
+                    var g = new StreamGeometry();
+                    using (var ctx = g.Open())
                     {
-                        ln.StartPoint = a; ln.EndPoint = b; ln.IsVisible = true;
+                        Point? last = null;
+                        foreach (var (a, b) in kv.Value)
+                        {
+                            if (last == null || Math.Abs(last.Value.X - a.X) > 1e-6 || Math.Abs(last.Value.Y - a.Y) > 1e-6)
+                            {
+                                if (last != null) ctx.EndFigure(false);
+                                ctx.BeginFigure(a, false);
+                            }
+                            ctx.LineTo(b);
+                            last = b;
+                        }
+                        if (last != null) ctx.EndFigure(false);
                     }
-                    else ln.IsVisible = false;
+                    path.Data = g;
+                    path.Stroke = Brush(255, (byte)(kv.Key >> 16 | 0x08), (byte)((kv.Key >> 8 & 0xFF) | 0x08), (byte)((kv.Key & 0xFF) | 0x08));
+                    path.IsVisible = true;
                 }
+                for (int i = used; i < mmSegs.Children.Count; i++) ((Path)mmSegs.Children[i]).IsVisible = false;
             }
             mmLine.IsVisible = opt.RacingLine && mm.LineColours.Count == 0;
             mmSegs.IsVisible = opt.RacingLine;
@@ -720,6 +769,17 @@ namespace RaceDisplay
                 Canvas.SetTop(c, at.Y - d / 2);
             }
 
+            // Labels and sector names are only placed again when the drawn view (or what's shown) changes;
+            // otherwise just their colours are kept up to date.
+            string labelsSig = $"{mmDrawn}|{opt.Checkpoints}{opt.Labels}{opt.Sectors}|{mm.Points.Count}";
+            if (labelsSig == mmLabelsSig)
+            {
+                for (int i = 0; i < mmLabels.Count && i < mm.Points.Count; i++)
+                    if (mmLabels[i].IsVisible) ((TextBlock)mmLabels[i].Child).Foreground = Brush(mm.Points[i].Colour.WithAlpha(255));
+            }
+            else
+            {
+            mmLabelsSig = labelsSig;
             // Everything placed so far (the dots), so labels keep clear of it.
             var taken = new List<Rect>();
             foreach (var pt in opt.Checkpoints ? mm.Points : new List<(double X, double Y, HudColor Colour, bool Gate, string Label)>())
@@ -734,7 +794,7 @@ namespace RaceDisplay
             while (mmLabels.Count < mm.Points.Count)
             {
                 var t = new TextBlock { FontSize = 11 * s, FontWeight = FontWeight.Bold };
-                var b = new Border { Child = t, Background = new SolidColorBrush(Color.FromArgb(170, 10, 12, 16)), Padding = new Thickness(3 * s, 0, 3 * s, 0), CornerRadius = new CornerRadius(3 * s), ZIndex = 40 };
+                var b = new Border { Child = t, Background = Brush(170, 10, 12, 16), Padding = new Thickness(3 * s, 0, 3 * s, 0), CornerRadius = new CornerRadius(3 * s), ZIndex = 40 };
                 mmLabels.Add(b);
                 minimapCanvas.Children.Add(b);
             }
@@ -761,27 +821,37 @@ namespace RaceDisplay
             }
 
             // Sector names: clear of the checkpoints, their labels and each other; not shown if there's no room.
-            foreach (var t in mmSectorTags) minimapCanvas.Children.Remove(t);
-            mmSectorTags.Clear();
+            int tagsUsed = 0;
             foreach (var info in mmSectorInfo)
             {
                 double lw = (info.Name.Length * 6.2 + 10) * s, lh = 15 * s;
                 if (!InCircle(info.Mid.X, info.Mid.Y, 0)) continue;
                 var spot = LabelPlacer.Place(info.Mid, info.Normal, lw, lh, taken, r => BoxInCircle(r.Center.X, r.Center.Y, r.Width, r.Height), 3 * s);
                 if (!BoxInCircle(spot.Center.X, spot.Center.Y, spot.Width, spot.Height)) continue;
-                var tag = new Border
+                taken.Add(spot);
+                if (tagsUsed >= mmSectorTagPool.Count)
                 {
-                    Background = new SolidColorBrush(Color.FromArgb(225, 10, 12, 16)),
-                    BorderBrush = Brush(info.Colour.WithAlpha(200)),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(3 * s),
-                    Padding = new Thickness(3 * s, 0, 3 * s, 1 * s),
-                    ZIndex = 38,
-                    Child = new TextBlock { Text = info.Name, FontSize = 10 * s, FontWeight = FontWeight.Bold, Foreground = Brush(info.Colour.WithAlpha(255)) },
-                };
+                    var nt = new Border
+                    {
+                        Background = Brush(225, 10, 12, 16),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(3 * s),
+                        Padding = new Thickness(3 * s, 0, 3 * s, 1 * s),
+                        ZIndex = 38,
+                        Child = new TextBlock { FontSize = 10 * s, FontWeight = FontWeight.Bold },
+                    };
+                    mmSectorTagPool.Add(nt);
+                    minimapCanvas.Children.Add(nt);
+                }
+                var tag = mmSectorTagPool[tagsUsed++];
+                tag.IsVisible = true;
+                tag.BorderBrush = Brush(info.Colour.WithAlpha(200));
+                var tt = (TextBlock)tag.Child;
+                tt.Text = info.Name;
+                tt.Foreground = Brush(info.Colour.WithAlpha(255));
                 Canvas.SetLeft(tag, spot.X); Canvas.SetTop(tag, spot.Y);
-                minimapCanvas.Children.Add(tag);
-                mmSectorTags.Add(tag);
+            }
+            for (int k = tagsUsed; k < mmSectorTagPool.Count; k++) mmSectorTagPool[k].IsVisible = false;
             }
 
             // Ghosts, then you on top.
@@ -810,7 +880,9 @@ namespace RaceDisplay
                 me = at;
                 Canvas.SetLeft(mmPlayer, at.X - 8 * s);
                 Canvas.SetTop(mmPlayer, at.Y - 8 * s);
-                mmPlayer.RenderTransform = new RotateTransform(mm.PlayerAngle);
+                mmPlayerTurn ??= new RotateTransform();
+                if (!ReferenceEquals(mmPlayer.RenderTransform, mmPlayerTurn)) mmPlayer.RenderTransform = mmPlayerTurn;
+                mmPlayerTurn.Angle = mm.PlayerAngle;
             }
 
             // The next checkpoint: a pulsing ring, and a faint line to it from you.
@@ -822,6 +894,9 @@ namespace RaceDisplay
                 var np = mm.Points[mm.NextIndex];
                 mmRingAt = T(np.X, np.Y);
                 mmRingBase = 12 * s;
+                mmRing.Width = mmRing.Height = mmRingBase;
+                Canvas.SetLeft(mmRing, mmRingAt.X - mmRingBase / 2);
+                Canvas.SetTop(mmRing, mmRingAt.Y - mmRingBase / 2);
                 mmRing.Stroke = Brush(np.Colour.WithAlpha(255));
                 // Off the map (zoomed in): no ring, and the line to it stops at the map's edge.
                 bool onMap = InCircle(mmRingAt.X, mmRingAt.Y, 12 * s);
@@ -916,7 +991,7 @@ namespace RaceDisplay
         {
             SetHideGameHud(m.HideGameHud);
             double s = builtScale;
-            IBrush fill = new SolidColorBrush(Color.FromArgb(m.BackgroundOpacity, 12, 15, 18));
+            IBrush fill = Brush(m.BackgroundOpacity, 12, 15, 18);
             timerBox.Background = fill;
             infoBox.Background = fill;
             bestLapBox.Background = fill;
@@ -1236,7 +1311,7 @@ namespace RaceDisplay
             markerLayer.IsVisible = true;
             markerScale = s;
             placed.Clear();
-            IBrush fill = new SolidColorBrush(Color.FromArgb((byte)Math.Min(200, (int)m.BackgroundOpacity), 12, 15, 18));
+            IBrush fill = Brush((byte)Math.Min(200, (int)m.BackgroundOpacity), 12, 15, 18);
 
             while (markerPool.Count < m.Markers.Count)
             {

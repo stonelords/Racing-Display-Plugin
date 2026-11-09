@@ -580,215 +580,6 @@ namespace RaceDisplay
             }
         }
 
-        // ---- Hologram ghost: a real copy of your ship, shown with the game's paste-preview hologram.
-        // Same steps the block placer uses (BlockPlacementPreview.UpdatePreviewVolume): copy the grid into an
-        // EntityBundle (BlockPlacerNetworkStories.TryCopy), spawn the placer's "previewer" prefab, give its
-        // ProjectionSourceComponent the bundle, Show() its PreviewHostComponent, then move that entity each frame.
-        private Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.BlockPlacerEntityComponentDefinition placerDef;
-        private Func<bool> copyDone;
-        private Func<EntityBundle> copyResult;
-        private string copyingName, ghostGridName;
-        private EntityBundle ghostBundle;
-        // Where the preview puts the copied grid inside its host (the bundle's own transform for the grid):
-        // its position and axes in host space. The host is moved so the grid lands on the ghost pose.
-        private Vec3D relPos, relX = new Vec3D(1, 0, 0), relY = new Vec3D(0, 1, 0), relZ = new Vec3D(0, 0, 1);
-        private Entity ghostHostEntity;
-        private Keen.Game2.Client.GameSystems.Render.PreviewHostComponent ghostHost;
-        private Session ghostSession;
-        private bool ghostShown, ghostFailed;
-        private double placerSearchAt = double.NegativeInfinity;
-
-        public string GhostGridName => ghostGridName;
-
-        private Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.BlockPlacerEntityComponentDefinition FindPlacerDefinition(Session session)
-        {
-            if (placerDef != null) return placerDef;
-            if (TimeSeconds - placerSearchAt < 5 && TimeSeconds >= placerSearchAt) return null;
-            placerSearchAt = TimeSeconds;
-            try
-            {
-                var field = AccessTools.Field(typeof(Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.BlockPlacerEntityComponent), "Definition");
-                foreach (Entity e in session.GetEntitiesOfType<Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.GridPastingToolComponent>())
-                {
-                    var tool = e.TryGet<Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.GridPastingToolComponent>(default);
-                    var def = tool != null ? field?.GetValue(tool) as Keen.Game2.Client.GameSystems.BlockPlacement.BlockPlacer.BlockPlacerEntityComponentDefinition : null;
-                    if (def?.PreviewerPrefab != null)
-                    {
-                        placerDef = def;
-                        PluginLog.Info($"Hologram ghost: found the block placer's preview prefab (on {e.DebugName})");
-                        return def;
-                    }
-                }
-                LogOnce("Hologram ghost: no block placer tool in the world yet (pick up the build tool once)");
-            }
-            catch (Exception e) { LogOnce("Hologram ghost: couldn't find the block placer: " + e.Message); }
-            return null;
-        }
-
-        public void CopyGhostGrid()
-        {
-            PluginLog.Step("copy ship for ghost");
-            try
-            {
-                var grid = ownGrid;
-                var session = CurrentSession();
-                if (grid == null || session == null || copyDone != null) return;
-                var def = FindPlacerDefinition(session);
-                if (def == null) return;
-                var story = Keen.Game2.Simulation.GameSystems.BlockPlacement.BlockPlacerNetworkStories.TryCopy(
-                    grid, def.CopyMode, null, EntityBundlePivotType.FirstOrigin);
-                var awaiter = story.GetAwaiter();
-                copyDone = () => awaiter.IsCompleted;
-                copyResult = () => awaiter.GetResult().Value?.Bundle;
-                copyingName = ShipName ?? grid.DebugName;
-                PluginLog.Info($"Hologram ghost: copying \"{copyingName}\"");
-            }
-            catch (Exception e)
-            {
-                copyDone = null;
-                LogOnce("Hologram ghost: copy failed: " + e);
-            }
-        }
-
-        private void FinishGhostCopy()
-        {
-            if (copyDone == null) return;
-            try
-            {
-                if (!copyDone()) return;
-                var bundle = copyResult();
-                copyDone = null;
-                if (bundle == null) { PluginLog.Info("Hologram ghost: the copy came back empty"); return; }
-                ghostBundle = bundle;
-                ghostGridName = copyingName;
-                try
-                {
-                    var rel = EntityBundleFunctions.GetRelativeTransform(bundle, 0);
-                    Vector3 Dir(float x, float y, float z) => RelativeTransform.TransformDirection(new Vector3(x, y, z), rel);
-                    var rx = Dir(1, 0, 0); var ry = Dir(0, 1, 0); var rz = Dir(0, 0, 1);
-                    relX = new Vec3D(rx.X, rx.Y, rx.Z); relY = new Vec3D(ry.X, ry.Y, ry.Z); relZ = new Vec3D(rz.X, rz.Y, rz.Z);
-                    relPos = new Vec3D(rel.Position.X, rel.Position.Y, rel.Position.Z);
-                    PluginLog.Info($"Hologram ghost: grid sits at {relPos.X:0.0},{relPos.Y:0.0},{relPos.Z:0.0} in the copy, "
-                        + $"axes X {relX.X:0.00},{relX.Y:0.00},{relX.Z:0.00} Y {relY.X:0.00},{relY.Y:0.00},{relY.Z:0.00}");
-                }
-                catch (Exception e)
-                {
-                    relPos = Vec3D.Zero; relX = new Vec3D(1, 0, 0); relY = new Vec3D(0, 1, 0); relZ = new Vec3D(0, 0, 1);
-                    LogOnce("Hologram ghost: couldn't read the copy's transform: " + e.Message);
-                }
-                ghostFailed = false;
-                if (ghostHostEntity != null) RemoveGhostHost();     // rebuild with the new copy
-                PluginLog.Info($"Hologram ghost: copied \"{ghostGridName}\"");
-            }
-            catch (Exception e)
-            {
-                copyDone = null;
-                LogOnce("Hologram ghost: copy failed: " + e);
-            }
-        }
-
-        // Quaternion whose local X / Y / Z come out as x / y / z (the game's "forward" may be -Z, so check).
-        private static Quaternion FromAxes(Vec3D x, Vec3D y, Vec3D z)
-        {
-            var vy = new Vector3((float)y.X, (float)y.Y, (float)y.Z);
-            var vz = new Vector3((float)z.X, (float)z.Y, (float)z.Z);
-            var q = Quaternion.CreateFromForwardUp(-vz, vy);
-            var t = new WorldTransform(Vector3D.Zero, q);
-            var check = WorldTransform.TransformDirection(new Vector3D(0, 0, 1), t);
-            if (check.X * z.X + check.Y * z.Y + check.Z * z.Z < 0.9) q = Quaternion.CreateFromForwardUp(vz, vy);
-            return q;
-        }
-
-        public bool PlaceGhostGrid(Vec3D position, Vec3D x, Vec3D y, Vec3D z)
-        {
-            PluginLog.Step("place ship ghost");
-            FinishGhostCopy();
-            if (ghostBundle == null || ghostFailed) return false;
-            try
-            {
-                var session = CurrentSession();
-                if (session == null) return false;
-                if (!ReferenceEquals(session, ghostSession)) { ghostHostEntity = null; ghostHost = null; ghostSession = session; }
-                // The preview places the grid at relPos with axes relX/Y/Z inside the host. For the grid to land on
-                // the ghost pose (pivot at position, axes x / y / z) the host needs axes H = G * R^T and must sit at
-                // position - H * relPos.
-                Vec3D hx = x * relX.X + y * relY.X + z * relZ.X;
-                Vec3D hy = x * relX.Y + y * relY.Y + z * relZ.Y;
-                Vec3D hz = x * relX.Z + y * relY.Z + z * relZ.Z;
-                Vec3D hostPos = position - (hx * relPos.X + hy * relPos.Y + hz * relPos.Z);
-                var view = new WorldTransform(new Vector3D(hostPos.X, hostPos.Y, hostPos.Z), FromAxes(hx, hy, hz));
-
-                if (ghostHostEntity == null)
-                {
-                    var def = FindPlacerDefinition(session);
-                    if (def == null) return false;
-                    var spawner = GameEntityExtensions.Get<IEntitySpawner>(session);
-                    var ob = def.PreviewerPrefab.Get();
-                    Keen.VRage.DCS.ObjectBuilders.EntityObjectBuilderFunctions
-                        .OB<WorldTransformComponent, WorldTransformComponentObjectBuilder>(ob).Transform = view;
-                    ghostHostEntity = spawner.SpawnEntity(ob, default(Keen.VRage.DCS.Builders.DEntityBuilder));
-                    ghostHost = ghostHostEntity?.TryGet<Keen.Game2.Client.GameSystems.Render.PreviewHostComponent>(default);
-                    var source = ghostHostEntity?.TryGet<Keen.Game2.Simulation.GameSystems.BlockPlacement.Projections.ProjectionSourceComponent>(default);
-                    if (ghostHost == null || source == null)
-                    {
-                        PluginLog.Info($"Hologram ghost: the preview prefab has no preview host ({ghostHost != null}, {source != null}); using the outline ghost");
-                        RemoveGhostHost();
-                        ghostFailed = true;
-                        return false;
-                    }
-                    ghostHost.UseBuildStages = false;
-                    ghostHost.ForcePhysicsMaterializationAround = false;
-                    source.ProjectionData = ghostBundle;
-                    ghostShown = false;
-                    PluginLog.Info($"Hologram ghost: showing \"{ghostGridName}\"");
-                }
-
-                if (!ghostShown) { ShowGhostHost(); ghostShown = true; }
-                if (ghostHostEntity.Data.Has<WorldTransform>())
-                    EntityTransformFunctions.SetWorldTransform(ghostHostEntity.Data, in view);
-                return true;
-            }
-            catch (Exception e)
-            {
-                PluginLog.Error("Hologram ghost: couldn't show it, using the outline ghost", e);
-                RemoveGhostHost();
-                ghostFailed = true;
-                return false;
-            }
-        }
-
-        /// <summary>Solid (normal materials) or the blue placement hologram, for the ship ghost.</summary>
-        private float ghostOpacity = 1f;
-        public float GhostGridOpacity { get => ghostOpacity; set { if (Math.Abs(value - ghostOpacity) > 0.001f) { ghostOpacity = value; ghostShown = false; } } }
-        private System.Reflection.MethodInfo setHostOpacity;
-
-        // PreviewHostComponent.SetOpacity: 0 hides, values up to 1 draw the blocks with their normal materials at
-        // that opacity, and 2+ are the hologram looks (Show() uses the placement-preview one).
-        private void ShowGhostHost()
-        {
-            setHostOpacity ??= AccessTools.Method(ghostHost.GetType(), "SetOpacity", new[] { typeof(float) });
-            if (setHostOpacity == null) { LogOnce("Hologram ghost: no SetOpacity, using the hologram look"); ghostHost.Show(); return; }
-            setHostOpacity.Invoke(ghostHost, new object[] { Math.Clamp(GhostGridOpacity, 0.05f, 1f) });
-        }
-
-        public void HideGhostGrid(bool remove)
-        {
-            if (remove) { RemoveGhostHost(); return; }
-            try { if (ghostShown && ghostHost != null) ghostHost.Hide(); } catch { }
-            ghostShown = false;
-        }
-
-        private void RemoveGhostHost()
-        {
-            try
-            {
-                if (ghostHostEntity != null && ReferenceEquals(ghostSession, CurrentSession()))
-                    GameEntityExtensions.Get<IEntitySpawner>(ghostSession).DeleteEntity(ghostHostEntity);
-            }
-            catch (Exception e) { LogOnce("Hologram ghost: couldn't remove it: " + e.Message); }
-            ghostHostEntity = null; ghostHost = null; ghostShown = false;
-        }
-
         // ---- Cinematic spectator (added to the game in "Hostile Encounters"); everything by name so older games still work.
         private const System.Reflection.BindingFlags Any =
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
@@ -971,6 +762,107 @@ namespace RaceDisplay
                 return true;
             }
             catch (Exception e) { LogOnce("Looked-at grid failed: " + e.Message); return false; }
+        }
+
+        public bool TryGetLookedAtBlock(Vec3D origin, Vec3D direction, double maxDistance, out BlockPick block)
+        {
+            block = null;
+            try
+            {
+                Session session = CurrentSession();
+                if (session == null) return false;
+                Vec3D end = origin + direction * maxDistance;
+                double best = maxDistance;
+                foreach (Entity e in session.GetEntitiesOfType<CubeGridComponent>())
+                {
+                    if (e == null || ReferenceEquals(e, ownGrid)) continue;
+                    if (!TryGridBox(e, origin, out GridBox gb, out WorldTransform t)) continue;
+                    if (gb.Distance > best) continue;   // a nearer block has been found already
+                    var test = new TimingGate(gb.Center, gb.Forward, gb.Up, gb.Width, gb.Height, gb.Depth);
+                    if (!test.SegmentIntersects(origin, end)) continue;
+                    var storage = e.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                    if (storage == null) continue;
+
+                    // The ray in the grid's own frame, then tested against each block's box.
+                    Vec3D ax = ToVec(WorldTransform.TransformDirection(new Vector3D(1, 0, 0), t));
+                    Vec3D ay = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 1, 0), t));
+                    Vec3D az = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 0, 1), t));
+                    Vec3D o = origin - ToVec(t.Position);
+                    double[] ro = { Vec3D.Dot(o, ax), Vec3D.Dot(o, ay), Vec3D.Dot(o, az) };
+                    double[] rd = { Vec3D.Dot(direction, ax), Vec3D.Dot(direction, ay), Vec3D.Dot(direction, az) };
+                    foreach (var b in storage.GetAllCubeBlocks())
+                    {
+                        if (b == null) continue;
+                        BoundingBoxI cells = b.AABB;
+                        BoundingBox local = CubeGridCoords.GridToLocal(cells);
+                        double[] lo = { Math.Min(local.Min.X, local.Max.X), Math.Min(local.Min.Y, local.Max.Y), Math.Min(local.Min.Z, local.Max.Z) };
+                        double[] hi = { Math.Max(local.Min.X, local.Max.X), Math.Max(local.Min.Y, local.Max.Y), Math.Max(local.Min.Z, local.Max.Z) };
+                        double hit = RayHitsBox(ro, rd, lo, hi);
+                        if (hit < 0 || hit >= best) continue;
+                        best = hit;
+                        block = new BlockPick
+                        {
+                            Grid = e, GridName = gb.Name, Distance = hit,
+                            Min = new[] { cells.Min.X, cells.Min.Y, cells.Min.Z },
+                            Max = new[] { cells.Max.X, cells.Max.Y, cells.Max.Z },
+                        };
+                    }
+                }
+                return block != null;
+            }
+            catch (Exception e) { LogOnce("Looked-at block failed: " + e.Message); return false; }
+        }
+
+        /// <summary>Where a ray first enters a box (distance along it, 0 if it starts inside), or -1 if it misses.</summary>
+        private static double RayHitsBox(double[] o, double[] d, double[] lo, double[] hi)
+        {
+            double enter = 0, exit = double.MaxValue;
+            for (int i = 0; i < 3; i++)
+            {
+                if (Math.Abs(d[i]) < 1e-12)
+                {
+                    if (o[i] < lo[i] || o[i] > hi[i]) return -1;
+                    continue;
+                }
+                double a = (lo[i] - o[i]) / d[i], b = (hi[i] - o[i]) / d[i];
+                if (a > b) (a, b) = (b, a);
+                enter = Math.Max(enter, a);
+                exit = Math.Min(exit, b);
+                if (enter > exit) return -1;
+            }
+            return enter;
+        }
+
+        public bool TryGetBlockSpan(BlockPick a, BlockPick b, out GridBox box)
+        {
+            box = default;
+            try
+            {
+                if (a == null || b == null || !ReferenceEquals(a.Grid, b.Grid) || !(a.Grid is Entity e) || !e.Data.Has<WorldTransform>()) return false;
+                WorldTransform t = EntityTransformFunctions.GetWorldTransform(e.Data);
+                var cells = new BoundingBoxI(
+                    new Vector3I(Math.Min(a.Min[0], b.Min[0]), Math.Min(a.Min[1], b.Min[1]), Math.Min(a.Min[2], b.Min[2])),
+                    new Vector3I(Math.Max(a.Max[0], b.Max[0]), Math.Max(a.Max[1], b.Max[1]), Math.Max(a.Max[2], b.Max[2])));
+                BoundingBox local = CubeGridCoords.GridToLocal(cells);
+                double lx = Math.Min(local.Min.X, local.Max.X), hx = Math.Max(local.Min.X, local.Max.X);
+                double ly = Math.Min(local.Min.Y, local.Max.Y), hy = Math.Max(local.Min.Y, local.Max.Y);
+                double lz = Math.Min(local.Min.Z, local.Max.Z), hz = Math.Max(local.Min.Z, local.Max.Z);
+                Vec3D ax = ToVec(WorldTransform.TransformDirection(new Vector3D(1, 0, 0), t));
+                Vec3D ay = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 1, 0), t));
+                Vec3D az = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 0, 1), t));
+                double w = hx - lx, h = hy - ly, d = hz - lz;
+                box = new GridBox
+                {
+                    Name = a.GridName,
+                    Center = ToVec(t.Position) + ax * ((lx + hx) / 2) + ay * ((ly + hy) / 2) + az * ((lz + hz) / 2),
+                    Forward = az, Up = ay,
+                    Width = w, Height = h, Depth = d,
+                    IsOpening = true,
+                    ThroughAxis = w <= h && w <= d ? 0 : h <= d ? 1 : 2,
+                };
+                return true;
+            }
+            catch (Exception ex) { LogOnce("Block span failed: " + ex.Message); return false; }
         }
 
         public bool TryGetShipAxes(out Vec3D x, out Vec3D y, out Vec3D z)

@@ -42,8 +42,10 @@ namespace RaceDisplay
             if (errorCount > 10) return; // something in the game changed; stop rather than spam every frame
             try
             {
+                PluginLog.Step("bridge refresh");
                 bridge.Refresh();
                 controller.Update();
+                PluginLog.Step("game");   // the rest of the frame is the game's own time
             }
             catch (Exception e)
             {

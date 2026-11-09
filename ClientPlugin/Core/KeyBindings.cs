@@ -36,8 +36,7 @@ namespace RaceDisplay.Core
     public static class KeyBindings
     {
         // Windows virtual-key codes used by the defaults and the controls screen.
-        public const int VK_PRIOR = 0x21, VK_NEXT = 0x22, VK_INSERT = 0x2D, VK_DELETE = 0x2E;
-        public const int VK_B = 0x42, VK_J = 0x4A, VK_K = 0x4B, VK_L = 0x4C, VK_N = 0x4E, VK_R = 0x52, VK_U = 0x55;
+        public const int VK_B = 0x42, VK_J = 0x4A, VK_L = 0x4C, VK_N = 0x4E, VK_R = 0x52, VK_U = 0x55;
         public const int VK_OEM_4 = 0xDB /* [ */, VK_OEM_6 = 0xDD /* ] */;
 
         /// <summary>Order and names shown in the Racing Display controls menu.</summary>
@@ -54,6 +53,8 @@ namespace RaceDisplay.Core
             // Course edit mode (placing and removing gates and checkpoints is aim + click there)
             (GateKey.EditMode, "Course edit mode on/off"),
             (GateKey.EditWheel, "Edit tool wheel (hold)"),
+            (GateKey.PlacementMode, "Placement: grid / blocks / air"),
+            (GateKey.EditLine, "Best lap line while editing"),
             (GateKey.Undo, "Undo course edit"),
             (GateKey.Redo, "Redo course edit"),
             (GateKey.ReverseCourse, "Reverse course"),
@@ -74,6 +75,8 @@ namespace RaceDisplay.Core
                 case GateKey.Undo:
                 case GateKey.Redo:
                 case GateKey.ReverseCourse:
+                case GateKey.PlacementMode:
+                case GateKey.EditLine:
                 case GateKey.Grow:
                 case GateKey.Shrink:
                     return "Course edit mode";
@@ -82,30 +85,38 @@ namespace RaceDisplay.Core
             }
         }
 
+        // Made once: GetBinding asks for the defaults every frame. (Nothing changes a binding it's given.)
+        private static readonly Dictionary<GateKey, KeyBinding> defaults = new Dictionary<GateKey, KeyBinding>();
+
         public static KeyBinding Default(GateKey key)
+        {
+            lock (defaults)
+            {
+                if (!defaults.TryGetValue(key, out var b)) defaults[key] = b = MakeDefault(key);
+                return b;
+            }
+        }
+
+        private static KeyBinding MakeDefault(GateKey key)
         {
             switch (key)
             {
-                case GateKey.GateOnGrid: return new KeyBinding(VK_J, ctrl: true);
-                case GateKey.RemoveGate: return new KeyBinding(VK_J, ctrl: true, shift: true);
                 case GateKey.Grow: return new KeyBinding(VK_OEM_6, ctrl: true);
                 case GateKey.Shrink: return new KeyBinding(VK_OEM_4, ctrl: true);
-                case GateKey.AddCheckpointOnGrid: return new KeyBinding(VK_K, ctrl: true);
-                case GateKey.RemoveLastCheckpoint: return new KeyBinding(VK_U, ctrl: true);
-                case GateKey.ClearCheckpoints: return new KeyBinding(VK_U, ctrl: true, shift: true);
-                case GateKey.LapCount: return new KeyBinding(VK_J);
+                case GateKey.LapCount: return new KeyBinding(VK_J, shift: true);
                 case GateKey.ResetTimer: return new KeyBinding(VK_R, ctrl: true);
-                case GateKey.ClearBest: return new KeyBinding(VK_R, ctrl: true, shift: true);
                 case GateKey.ToggleMarkers: return new KeyBinding(VK_N, ctrl: true);
                 case GateKey.Replay: return new KeyBinding(VK_L, ctrl: true, shift: true);
                 case GateKey.ResultsMode: return new KeyBinding(VK_B, ctrl: true);
                 case GateKey.ReplayCamera: return new KeyBinding(0x43 /* C */, ctrl: true, shift: true);
                 case GateKey.EditMode: return new KeyBinding(0x46 /* F */, ctrl: true);
-                case GateKey.EditWheel: return new KeyBinding(VK_R); // R (held); only does anything in course edit mode
+                case GateKey.EditWheel: return new KeyBinding(VK_R, shift: true); // Shift+R (held); only does anything in course edit mode
                 // Not Ctrl+Z / Ctrl+Y: the game uses those to undo / redo building.
                 case GateKey.Undo: return new KeyBinding(VK_U, ctrl: true);
                 case GateKey.Redo: return new KeyBinding(VK_U, ctrl: true, shift: true);
                 case GateKey.ReverseCourse: return new KeyBinding(0x49 /* I */, ctrl: true, shift: true);
+                case GateKey.PlacementMode: return new KeyBinding(0x54 /* T */, shift: true);
+                case GateKey.EditLine: return new KeyBinding(VK_L, shift: true);
                 default: return new KeyBinding();
             }
         }
@@ -178,7 +189,14 @@ namespace RaceDisplay.Core
         /// <summary>Main keys (not modifiers) that went down this frame.</summary>
         public readonly List<int> NewKeys = new List<int>();
 
-        public void Update(IGameBridge game, Func<GateKey, KeyBinding> binding)
+        private static readonly GateKey[] AllKeys = (GateKey[])Enum.GetValues(typeof(GateKey));
+        private readonly bool[] polled = new bool[256];
+
+        /// <summary>
+        /// Reads the keyboard. Only the keys that are bound are read, unless scanAll (choosing a new key in the
+        /// Controls tab), when every key is read so NewKeys can say which one went down.
+        /// </summary>
+        public void Update(IGameBridge game, Func<GateKey, KeyBinding> binding, bool scanAll = false)
         {
             pressed.Clear();
             NewKeys.Clear();
@@ -187,14 +205,29 @@ namespace RaceDisplay.Core
             Shift = focus && game.IsKeyDown(0x10);
             Alt = focus && game.IsKeyDown(0x12);
 
-            for (int vk = 0x08; vk < 256; vk++)
+            if (scanAll)
             {
-                bool down = focus && game.IsKeyDown(vk);
-                if (down && !keyWasDown[vk] && KeyNames.IsAssignable(vk)) NewKeys.Add(vk);
-                keyWasDown[vk] = down;
+                for (int vk = 0x08; vk < 256; vk++)
+                {
+                    bool down = focus && game.IsKeyDown(vk);
+                    if (down && !keyWasDown[vk] && KeyNames.IsAssignable(vk)) NewKeys.Add(vk);
+                    keyWasDown[vk] = down;
+                }
+            }
+            else
+            {
+                Array.Clear(polled, 0, polled.Length);
+                foreach (GateKey key in AllKeys)
+                {
+                    var b = binding(key);
+                    int vk = b == null ? 0 : b.Key & 0xFF;
+                    if (vk == 0 || polled[vk]) continue;
+                    polled[vk] = true;
+                    keyWasDown[vk] = focus && game.IsKeyDown(vk);
+                }
             }
 
-            foreach (GateKey key in Enum.GetValues(typeof(GateKey)))
+            foreach (GateKey key in AllKeys)
             {
                 var b = binding(key);
                 bool down = b != null && b.Key != 0 && keyWasDown[b.Key & 0xFF]

@@ -59,7 +59,7 @@ namespace RaceDisplay
                                      .Where(m => m.Name.EndsWith("OpenTerminalScreen") && m.GetParameters().Length == 2))
                             harmony.Patch(m, prefix: new HarmonyMethod(typeof(TerminalTab), nameof(OpenTerminalPrefix)));
 
-                // The player's keybinds handler opens the terminal with G; J uses it to open the terminal too.
+                // The player's keybinds handler opens the terminal with G; Shift+J uses it to open the terminal too.
                 var keybinds = AccessTools.TypeByName("Keen.Game2.Client.WorldObjects.Shared.PlayerKeybindsInputHandlerComponent");
                 var kInit = keybinds == null ? null : AccessTools.GetDeclaredMethods(keybinds).FirstOrDefault(m => m.Name == "Init");
                 if (kInit != null) harmony.Patch(kInit, postfix: new HarmonyMethod(typeof(TerminalTab), nameof(KeybindsInitPostfix)));
@@ -189,7 +189,7 @@ namespace RaceDisplay
         private static Avalonia.Threading.DispatcherTimer selectTimer;
 
         /// <summary>
-        /// After J opened the terminal: keep selecting Racing Display > Race (a few times a second, for a few seconds)
+        /// After Shift+J opened the terminal: keep selecting Racing Display > Race (a few times a second, for a few seconds)
         /// until it's the selected page. The terminal picks its own first page as it opens, which can come after ours.
         /// </summary>
         private static void StartSelectingRace()

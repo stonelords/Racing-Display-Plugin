@@ -2,30 +2,33 @@ namespace RaceDisplay.Core
 {
     public enum GateKey
     {
-        RemoveGate,  // no longer used (course edit mode)
         Grow,        // default Ctrl+]
         Shrink,      // default Ctrl+[
         ResetTimer,  // default Ctrl+R
-        GateOnGrid,  // no longer used (course edit mode); kept so saved settings still load
-        ClearBest,   // no longer used (Records tab > Reset)
-        AddCheckpointOnGrid,  // no longer used (course edit mode)
-        RemoveLastCheckpoint, // no longer used (course edit mode)
-        ClearCheckpoints,     // no longer used (course edit mode)
         ToggleMarkers,        // default Ctrl+N: checkpoint/gate markers on or off
-        LapCount,    // default J: opens the race setup (Racing Display menu, Race tab)
-        OpenControls,         // no longer used: controls are changed from the pause menu (Esc > Racing Display)
+        LapCount,    // default Shift+J: opens the race setup (Racing Display menu, Race tab)
         Replay,               // default Ctrl+Shift+L: watch the best-lap replay (press again to stop)
         ResultsMode,          // default Ctrl+B: race results against the course best or this ship's best
         EditMode,             // default Ctrl+F: course edit mode on/off
-        EditWheel,            // default R (hold): tool wheel in course edit mode
+        EditWheel,            // default Shift+R (hold): tool wheel in course edit mode
         ReplayCamera,         // default Ctrl+Shift+C: replay camera orbit (move around, keeps aiming at the ghost) / chase
         Undo,                 // default Ctrl+U: undo the last course edit (edit mode)
         Redo,                 // default Ctrl+Shift+U: redo it
         ReverseCourse,        // default Ctrl+Shift+I: fly the course the other way round (edit mode)
-        RaceHudOnly,          // no longer used (race HUD only is a step of the game's HUD key, U)
+        PlacementMode,        // default Shift+T: edit mode places on a grid / by picking blocks / in the air
+        EditLine,             // default Shift+L: show or hide the best lap line while editing
     }
 
     public enum TextAlign { Left, Center, Right }
+
+    /// <summary>A block picked by aiming at it (course edit mode, Pick blocks): its grid and its cells.</summary>
+    public sealed class BlockPick
+    {
+        public object Grid;          // the game's grid (only compared, never used outside the bridge)
+        public string GridName;
+        public int[] Min, Max;       // the block's cells on its grid (Min inclusive, Max exclusive)
+        public double Distance;      // from the eye along the look ray (m)
+    }
 
     /// <summary>A grid with the names it goes by (grid name, its antennas' names) and its box.</summary>
     public sealed class NamedGrid
@@ -173,6 +176,15 @@ namespace RaceDisplay.Core
         /// <summary>The nearest other grid the look ray hits, within maxDistance (fitted to its opening if asked).</summary>
         bool TryGetLookedAtGrid(Vec3D origin, Vec3D direction, double maxDistance, bool fitToOpening, out GridBox box);
 
+        /// <summary>The nearest block (on another grid) the look ray hits, within maxDistance.</summary>
+        bool TryGetLookedAtBlock(Vec3D origin, Vec3D direction, double maxDistance, out BlockPick block);
+
+        /// <summary>
+        /// The box from one block to another on the same grid (both included), lined up with the grid, like the
+        /// game's partial copy. IsOpening is set and ThroughAxis is its thinnest side, the way you fly through it.
+        /// </summary>
+        bool TryGetBlockSpan(BlockPick a, BlockPick b, out GridBox box);
+
         /// <summary>True while the game window has keyboard focus.</summary>
         bool HasFocus { get; }
 
@@ -262,27 +274,6 @@ namespace RaceDisplay.Core
         /// </summary>
         bool SetSpectatorCinematic(bool on);
 
-        /// <summary>
-        /// Takes a copy of the ship you're sitting in (the same copy the game's Ctrl+C makes) for a hologram ghost.
-        /// Happens in the background; does nothing if you're not in a ship.
-        /// </summary>
-        void CopyGhostGrid();
-
-        /// <summary>
-        /// Shows the copied ship as a real hologram (the game's paste preview) with its pivot at position and its
-        /// local X / Y / Z axes along x / y / z. False if there's no copy yet or the game wouldn't make one
-        /// (then draw the outline ghost instead).
-        /// </summary>
-        bool PlaceGhostGrid(Vec3D position, Vec3D x, Vec3D y, Vec3D z);
-
-        /// <summary>Hides the hologram ghost (call when no ghost is shown this frame). Remove = delete it too.</summary>
-        void HideGhostGrid(bool remove);
-
-        /// <summary>Opacity of the solid ship ghost, 0.05 to 1.</summary>
-        float GhostGridOpacity { get; set; }
-
-        /// <summary>Name of the ship copied for the hologram ghost, or null.</summary>
-        string GhostGridName { get; }
 
         /// <summary>Where the spectator camera is and which way it faces now.</summary>
         bool TryGetSpectatorView(out Vec3D position, out Vec3D forward, out Vec3D up);
