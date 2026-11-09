@@ -269,6 +269,18 @@ namespace RaceDisplay.Core
             },
             new SettingDef
             {
+                Section = "Display", Name = "Only mark the next checkpoints", Toggle = true,
+                Description = "On: only the next few checkpoints (and the gate once it's among them) have markers and labels, so a long or twisting course isn't cluttered. How many: Checkpoints marked ahead. Off: every checkpoint is marked. Edit mode always shows them all.",
+                Get = s => B(s.LimitMarkers), Set = (s, v) => s.LimitMarkers = v >= 0.5,
+            },
+            new SettingDef
+            {
+                Section = "Display", Name = "Checkpoints marked ahead", Min = 1, Max = 10, Step = 1,
+                Description = "With Only mark the next checkpoints on: how many of the coming checkpoints have markers (the next one counts as 1). Before a race the gate counts as the first.",
+                Get = s => s.MarkersAhead, Set = (s, v) => s.MarkersAhead = (int)Math.Round(v),
+            },
+            new SettingDef
+            {
                 Section = "Display", Name = "HUD size", Min = 0.5, Max = 2, Step = 0.05, Format = "{0:0.00}",
                 Description = "Overall size of the race panels and text.",
                 Get = s => s.HudScale, Set = (s, v) => s.HudScale = v,

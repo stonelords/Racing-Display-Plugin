@@ -26,6 +26,9 @@ namespace RaceDisplay.Core
 
         /// <summary>Always-visible markers on checkpoints and the gate (Ctrl+N toggles).</summary>
         public bool ShowMarkers { get; set; } = true;
+        /// <summary>Only the next few checkpoints (MarkersAhead) have markers, not the whole course.</summary>
+        public bool LimitMarkers { get; set; }
+        public int MarkersAhead { get; set; } = 3;
         /// <summary>Marker size as a share of the distance to it (keeps it the same size on screen). 0.03 = 3%.</summary>
         public double MarkerSize { get; set; } = 0.03;
 

@@ -293,6 +293,8 @@ namespace RaceDisplay.Core
         // The wheel only holds what you place. How it's placed (on a grid, pick blocks, in the air) is the placement
         // mode, with its own key; Pick blocks works like the game's partial copy (two corner blocks).
         private static readonly string[] WheelLabels = { "Start/Finish", "Start gate", "Finish gate", "Checkpoint" };
+        private Vec3D? sameRingAt;                 // a checkpoint ring clicked again: a 2nd click adds it once more
+        private double sameRingTime;
         private BlockPick blockFirst;              // Pick blocks: the first corner, once clicked
         private TimingGate blockPreview;           // Pick blocks: the aimed block, or the box from the first corner to it
         private TimingGate airPreview;             // where a gate / checkpoint would go in the air (In the air switch)
@@ -485,11 +487,23 @@ namespace RaceDisplay.Core
                 {
                     var list = WorldCheckpoints();
                     int already = list.FindIndex(x => (x.ToGate().Center - gate.Center).Length < 2);
-                    if (already >= 0) { Notify($"That's already CP {already + 1}", HudColor.Yellow); return; }
+                    if (already >= 0)
+                    {
+                        // Clicking it again soon after adds it once more: for a course that comes back through
+                        // the same ring (the other way). Each pass through it then counts as the next one in order.
+                        bool confirm = sameRingAt.HasValue && (sameRingAt.Value - gate.Center).Length < 2 && game.TimeSeconds - sameRingTime < 6;
+                        if (!confirm)
+                        {
+                            sameRingAt = gate.Center; sameRingTime = game.TimeSeconds;
+                            Notify($"That's already CP {already + 1}. Click it again to use it as CP {list.Count + 1} too (for a course that comes back through it)", HudColor.Yellow);
+                            return;
+                        }
+                        sameRingAt = null;
+                    }
                     if (timer.Gate != null && (timer.Gate.Center - gate.Center).Length < 2) { Notify("That's the start / finish gate", HudColor.Yellow); return; }
                     list.Add(GateSettings.SavedGate.From(gate, game.WorldId));
                     SaveCheckpoints(list, position);
-                    Notify($"Checkpoint {list.Count} set {where}", HudColor.Cyan);
+                    Notify(already >= 0 ? $"Checkpoint {list.Count} set on the same ring as CP {already + 1}: each pass through it counts as the next one in order" : $"Checkpoint {list.Count} set {where}", HudColor.Cyan);
                 }
                 Sound(settings.SoundCheckpoint);
             }
@@ -658,7 +672,8 @@ namespace RaceDisplay.Core
         /// <summary>Edit mode on screen: the timer box shows the tool and the controls; the aimed-at grid is outlined.</summary>
         private void DrawEditMode(HudModel model)
         {
-            if (model.Timer != null)
+            // No start gate yet means no timer panel from the race side: make one, so the tool and keys still show.
+            model.Timer ??= new HudModel.TimerPanel();
             {
                 model.Timer.Label = "COURSE EDIT MODE  ·  " + PlacementName;
                 model.Timer.Big = ToolName;
@@ -711,6 +726,57 @@ namespace RaceDisplay.Core
                 int[,] edges = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
                 for (int e = 0; e < 12; e++) game.DrawMarkerLine(k[edges[e, 0]], k[edges[e, 1]], c);
             }
+        }
+
+        /// <summary>
+        /// For checkpoints in the same place (a ring flown through twice): only one of them gets a marker, labelled
+        /// with all their numbers ("CP 2 / 5"). It's the next one to fly if that's among them, else the first not
+        /// flown yet, else the last. False for the others.
+        /// </summary>
+        private bool LimitingMarkers => settings.LimitMarkers && !editMode && !replaying;
+
+        /// <summary>
+        /// Only mark the next checkpoints: is checkpoint i among the next MarkersAhead targets? In a race they're the
+        /// checkpoints still to fly from the next one on; before a race the start gate comes first, then CP 1, 2...
+        /// </summary>
+        private bool CheckpointAhead(int i, int next, bool racing)
+        {
+            if (!LimitingMarkers) return true;
+            int ahead = Math.Max(1, settings.MarkersAhead);
+            if (!racing) return 1 + i < ahead;
+            if (next < 0 || i < next || timer.IsCheckpointHit(i)) return false;
+            int rank = 0;
+            for (int j = next; j < i; j++) if (!timer.IsCheckpointHit(j)) rank++;
+            return rank < ahead;
+        }
+
+        /// <summary>
+        /// Only mark the next checkpoints, for the gates: the start (finish = false) is the first target before a
+        /// race; the finish (or start / finish on a circuit) comes after the last checkpoint still to fly.
+        /// </summary>
+        private bool GateAhead(bool finish, bool racing)
+        {
+            if (!LimitingMarkers) return true;
+            int ahead = Math.Max(1, settings.MarkersAhead);
+            if (!racing) return !finish || timer.Checkpoints.Count + 1 < ahead;
+            if (!finish) return false;
+            int left = 0;
+            int next = timer.NextCheckpoint;
+            if (next >= 0) for (int j = next; j < timer.Checkpoints.Count; j++) if (!timer.IsCheckpointHit(j)) left++;
+            return left < ahead;
+        }
+
+        private bool MarkerFor(int i, int next, out string name)
+        {
+            var group = timer.SameSpot(i);
+            name = $"CP {i + 1}";
+            if (group.Count <= 1) return true;
+            int shown = group.Contains(next) ? next : -1;
+            if (shown < 0) foreach (int j in group) if (!timer.IsCheckpointHit(j)) { shown = j; break; }
+            if (shown < 0) shown = group[group.Count - 1];
+            if (i != shown) return false;
+            name = "CP " + string.Join(" / ", group.Select(j => (j + 1).ToString()));
+            return true;
         }
 
         // ---------------------------------------------------------------- lap tracking, live gap, sounds
@@ -3365,22 +3431,24 @@ namespace RaceDisplay.Core
 
             for (int i = 0; i < timer.Checkpoints.Count; i++)
             {
+                if (!MarkerFor(i, next, out string name)) continue;   // a ring used twice gets one label
+                if (!CheckpointAhead(i, next, racing)) continue;      // Only mark the next checkpoints
                 bool hit = timer.IsCheckpointHit(i);
                 bool isNext = i == next;
                 HudColor colour = hit ? HudColor.Green.WithAlpha(130)
                                 : timer.IsMissed(i) ? HudColor.Red.WithAlpha(150)
                                 : isNext ? HudColor.Orange.WithAlpha(255)
                                 : racing ? HudColor.Orange.WithAlpha(150) : HudColor.Orange;
-                Add(timer.Checkpoints[i], $"CP {i + 1}", colour, isNext);
+                Add(timer.Checkpoints[i], name, colour, isNext);
             }
             bool gateIsTarget = next == -1;
             if (timer.FinishGate != null)
             {
                 // Sprint: the start gate is only a target before the race; the finish gate is the last target.
-                Add(timer.Gate, "START", HudColor.Cyan.WithAlpha((byte)(racing ? 140 : 255)), !racing);
-                Add(timer.FinishGate, "FINISH", HudColor.Purple.WithAlpha(255), racing && gateIsTarget);
+                if (GateAhead(false, racing)) Add(timer.Gate, "START", HudColor.Cyan.WithAlpha((byte)(racing ? 140 : 255)), !racing);
+                if (GateAhead(true, racing)) Add(timer.FinishGate, "FINISH", HudColor.Purple.WithAlpha(255), racing && gateIsTarget);
             }
-            else Add(timer.Gate, "START / FINISH", HudColor.Cyan.WithAlpha(255), gateIsTarget);
+            else if (GateAhead(true, racing) || GateAhead(false, racing)) Add(timer.Gate, "START / FINISH", HudColor.Cyan.WithAlpha(255), gateIsTarget);
             return true;
         }
 
@@ -3431,9 +3499,9 @@ namespace RaceDisplay.Core
             HudModel.Message centre = null;
             if (message != null && now < messageUntil)
                 centre = new HudModel.Message { Text = message, Colour = messageColour };
-            else if (timer.Gate == null && now - worldLoadedAt < 30)
+            else if (timer.Gate == null && !editMode && now - worldLoadedAt < 30)
                 // Shown for 30 s after loading a world: confirms the plugin is running.
-                centre = new HudModel.Message { Text = $"Race Display: {settings.GetBinding(GateKey.EditMode)} for course edit mode to set up a course.  Esc > Racing Display for settings" };
+                centre = new HudModel.Message { Text = $"Race Display: {settings.GetBinding(GateKey.EditMode)} for course edit mode to set up a course.  G > Racing Display (or {settings.GetBinding(GateKey.LapCount)}) for the menu" };
 
             HudModel.Message race = raceMessage != null && now < raceMessageUntil
                 ? new HudModel.Message { Text = raceMessage, Colour = raceMessageColour }
@@ -3514,22 +3582,24 @@ namespace RaceDisplay.Core
 
                 for (int i = 0; i < timer.Checkpoints.Count; i++)
                 {
+                    if (!MarkerFor(i, next, out string name)) continue;   // a ring used twice gets one marker
+                    if (!CheckpointAhead(i, next, racing)) continue;      // Only mark the next checkpoints
                     bool hit = timer.IsCheckpointHit(i);
                     bool isNext = i == next;
                     HudColor colour = hit ? HudColor.Green.WithAlpha(110)
                                     : isNext ? HudColor.Orange.WithAlpha(255)
                                     : racing ? HudColor.Orange.WithAlpha(110) : HudColor.Orange;
-                    DrawMarker(timer.Checkpoints[i], $"CP {i + 1}", colour, isNext, isNext ? 1.6 : 1.0, !hudLabels);
+                    DrawMarker(timer.Checkpoints[i], name, colour, isNext, isNext ? 1.6 : 1.0, !hudLabels);
                 }
                 if (timer.Gate != null)
                 {
                     bool gateIsTarget = next == -1;
                     if (timer.FinishGate != null)
                     {
-                        DrawMarker(timer.Gate, "START", HudColor.Cyan, !racing, 1.0, !hudLabels);
-                        DrawMarker(timer.FinishGate, "FINISH", HudColor.Purple, racing && gateIsTarget, gateIsTarget && racing ? 1.4 : 1.0, !hudLabels);
+                        if (GateAhead(false, racing)) DrawMarker(timer.Gate, "START", HudColor.Cyan, !racing, 1.0, !hudLabels);
+                        if (GateAhead(true, racing)) DrawMarker(timer.FinishGate, "FINISH", HudColor.Purple, racing && gateIsTarget, gateIsTarget && racing ? 1.4 : 1.0, !hudLabels);
                     }
-                    else DrawMarker(timer.Gate, "START / FINISH", HudColor.Cyan, gateIsTarget, gateIsTarget && racing ? 1.4 : 1.0, !hudLabels);
+                    else if (GateAhead(true, racing) || GateAhead(false, racing)) DrawMarker(timer.Gate, "START / FINISH", HudColor.Cyan, gateIsTarget, gateIsTarget && racing ? 1.4 : 1.0, !hudLabels);
                 }
             }
 

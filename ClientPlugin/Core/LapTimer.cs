@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
 
 namespace RaceDisplay.Core
@@ -185,8 +186,24 @@ namespace RaceDisplay.Core
                 cpSplit.Add(null);
                 cpInside.Add(currentShipPosition.HasValue && g.Contains(currentShipPosition.Value));
             }
+            // Checkpoints in the same place (one ring used twice, for a course that comes back through it the
+            // other way): each pass through it counts as just one of them, the next in order.
+            cpGroups.Clear();
+            for (int i = 0; i < checkpoints.Count; i++)
+            {
+                var group = new List<int>();
+                for (int j = 0; j < checkpoints.Count; j++)
+                    if ((checkpoints[j].Center - checkpoints[i].Center).Length < SameSpotDistance) group.Add(j);
+                cpGroups.Add(group.ToArray());
+            }
             Reset();
         }
+
+        private const double SameSpotDistance = 2;
+        private readonly List<int[]> cpGroups = new List<int[]>();
+
+        /// <summary>The checkpoints in the same place as checkpoint i (i itself included), in order.</summary>
+        public IReadOnlyList<int> SameSpot(int i) => i >= 0 && i < cpGroups.Count ? cpGroups[i] : new[] { i };
 
         /// <summary>Stops the race and re-arms the gate (lap times are cleared).</summary>
         /// <summary>Takes the current position as the starting point without testing the path to it (after course editing).</summary>
@@ -309,17 +326,31 @@ namespace RaceDisplay.Core
             }
 
             // Checkpoints: count once per lap, on entry.
+            List<int> entered = null;
             for (int i = 0; i < checkpoints.Count; i++)
             {
                 var cp = checkpoints[i];
                 bool hit = cp.SegmentIntersects(previous, current);
-                if (hit && !cpInside[i] && State == TimerState.Running && !cpHit[i])
-                {
-                    cpHit[i] = true;
-                    cpSplit[i] = now - lapStart;
-                    Triggered?.Invoke(LapEventKind.CheckpointHit, i);
-                }
+                if (hit && !cpInside[i] && State == TimerState.Running && !cpHit[i]) (entered ??= new List<int>()).Add(i);
                 cpInside[i] = cp.Contains(current);
+            }
+            if (entered != null)
+            {
+                var counted = new HashSet<int>();
+                foreach (int i in entered)
+                {
+                    // Several checkpoints in this place: this pass is the next one in order not flown yet.
+                    var group = SameSpot(i);
+                    if (group.Any(counted.Contains)) continue;
+                    int highest = HighestHitThisLap, pick = -1;
+                    foreach (int j in group) if (!cpHit[j] && j > highest) { pick = j; break; }
+                    if (pick < 0) foreach (int j in group) if (!cpHit[j]) { pick = j; break; }
+                    if (pick < 0) continue;
+                    foreach (int j in group) counted.Add(j);
+                    cpHit[pick] = true;
+                    cpSplit[pick] = now - lapStart;
+                    Triggered?.Invoke(LapEventKind.CheckpointHit, pick);
+                }
             }
 
             // Start/finish gate.
