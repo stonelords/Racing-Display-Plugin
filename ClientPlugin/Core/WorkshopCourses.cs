@@ -8,8 +8,8 @@ namespace RaceDisplay.Core
 {
     /// <summary>
     /// A world made from a Workshop download doesn't get RaceDisplayCourses.json copied into its new save folder,
-    /// but the downloaded copy has it. This finds RaceDisplayCourses.json files in Steam's Workshop downloads and the
-    /// game's own folders (not other saves), so the one that fits this world can be used.
+    /// but the downloaded copy has it. This finds RaceDisplayCourses.json files in Steam's Workshop downloads, so the one from the Workshop item this
+    /// world was started from can be used.
     /// </summary>
     public static class WorkshopCourses
     {
@@ -36,16 +36,6 @@ namespace RaceDisplay.Core
                 }
                 catch (Exception) { }
             }
-            // The game's own folders (downloads it keeps itself), but not the saves.
-            try
-            {
-                string se2 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers2");
-                if (Directory.Exists(se2))
-                    foreach (var f in Directory.EnumerateFiles(se2, GateSettings.WorldCourses.FileName, SearchOption.AllDirectories))
-                        if (f.IndexOf(Path.DirectorySeparatorChar + "SaveGames" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) < 0)
-                            found.Add(f);
-            }
-            catch (Exception) { }
             return found.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
@@ -81,28 +71,17 @@ namespace RaceDisplay.Core
         }
 
         /// <summary>
-        /// How well a course fits this world: the share of its gates and checkpoints that sit on (inside or next to)
-        /// a grid that's here. A course from a different world fits nothing.
+        /// The Workshop item id for a course file in Steam's downloads (content\&lt;app&gt;\&lt;item id&gt;\...), or null
+        /// for one that isn't in a Workshop item folder.
         /// </summary>
-        public static double Fit(GateSettings.SavedCourse course, List<NamedGrid> grids)
+        public static string ItemId(string courseFile)
         {
-            if (course?.Gate == null || grids == null || grids.Count == 0) return 0;
-            var gates = new List<GateSettings.SavedGate> { course.Gate };
-            if (course.Finish != null) gates.Add(course.Finish);
-            if (course.Checkpoints != null) gates.AddRange(course.Checkpoints);
-            int onGrid = 0;
-            foreach (var g in gates)
-            {
-                if (g?.Center == null || g.Center.Length < 3) continue;
-                var c = new Vec3D(g.Center[0], g.Center[1], g.Center[2]);
-                foreach (var grid in grids)
-                {
-                    var b = grid.Box;
-                    double reach = Math.Max(b.Width, Math.Max(b.Height, b.Depth)) / 2 + 15;
-                    if ((b.Center - c).Length <= reach) { onGrid++; break; }
-                }
-            }
-            return gates.Count == 0 ? 0 : onGrid / (double)gates.Count;
+            var parts = Path.GetFullPath(courseFile).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            for (int i = 0; i + 2 < parts.Length; i++)
+                if (string.Equals(parts[i], "content", StringComparison.OrdinalIgnoreCase) && i > 0
+                    && string.Equals(parts[i - 1], "workshop", StringComparison.OrdinalIgnoreCase))
+                    return parts[i + 2];   // content\<app id>\<item id>
+            return null;
         }
     }
 }

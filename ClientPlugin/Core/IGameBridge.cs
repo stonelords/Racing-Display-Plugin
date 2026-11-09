@@ -17,6 +17,8 @@ namespace RaceDisplay.Core
         ReverseCourse,        // default Ctrl+Shift+I: fly the course the other way round (edit mode)
         PlacementMode,        // default Shift+T: edit mode places on a grid / by picking blocks / in the air
         EditLine,             // default Shift+L: show or hide the best lap line while editing
+        MoveCheckpoint,       // default Shift+M: aim at a checkpoint, then left click its new place (keeps its number)
+        SetStartSpot,         // default Ctrl+T: the reset race teleport goes to where your seat is now
     }
 
     public enum TextAlign { Left, Center, Right }
@@ -73,9 +75,19 @@ namespace RaceDisplay.Core
         RaceCourseBest,
         OpenGhostFolder,
         RefreshGhosts,
+        SavePreset,        // Text = name: all Settings-tab values under that name
+        LoadPreset,        // Text = name
+        DeletePreset,      // Text = name
+        ExportPreset,      // Text = name: write it to a file in the presets folder (to share)
+        ImportPreset,      // Text = file path: add the preset in that file
+        OpenPresetFolder,
+        ClearCourse,       // remove this world's gates, checkpoints and sectors (saved courses stay)
+        RenameCourse,      // Text = "old name\nnew name"
         SetPilotName,      // Text = name
         AddSector,         // Text = "from|to|name" (route point indexes)
         DeleteSector,      // Row = sector index
+        SetStartSpot,      // the reset race teleport goes to where you are now
+        ClearStartSpot,    // back to just behind the start gate
         RaceShip,          // Text = ship name: the main ghost, racing line and live gap use its best lap
         Close,
     }
@@ -147,10 +159,29 @@ namespace RaceDisplay.Core
         bool TryGetControlledPose(out Vec3D position, out Vec3D forward, out Vec3D up);
 
         /// <summary>
+        /// The way you're facing: the seat's (cockpit's) forward in a ship, else the character's. Unlike the pose's
+        /// forward (the grid's own axis, which depends on how the ship was built), this is the way the ship points.
+        /// </summary>
+        bool TryGetFacing(out Vec3D forward);
+
+        /// <summary>The Workshop item the current world was just started from (its ids as text), or null.</summary>
+        string[] WorkshopStartIds { get; }
+        void ClearWorkshopStart();
+
+        /// <summary>
         /// Velocity (m/s) of the ship being flown. False when not seated in a ship.
         /// Call after TryGetControlledPose in the same frame.
         /// </summary>
         bool TryGetShipVelocity(out Vec3D velocity);
+
+        /// <summary>Moves the ship you're flying so your seat is at the position, facing that way, and stops it. False if not in a ship.</summary>
+        bool TeleportShip(Vec3D seatPosition, Vec3D forward, Vec3D up);
+
+        /// <summary>Asks the game to stop the ship you're flying.</summary>
+        void StopShip();
+
+        /// <summary>Your seat's position and facing (forward, up) while flying a ship. False on foot.</summary>
+        bool TryGetSeatPose(out Vec3D position, out Vec3D forward, out Vec3D up);
 
         /// <summary>
         /// Middle of the ship you're flying (centre of its blocks' bounding box) in the world. The grid's own

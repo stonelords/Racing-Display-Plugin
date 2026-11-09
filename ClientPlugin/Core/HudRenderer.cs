@@ -11,6 +11,22 @@ namespace RaceDisplay.Core
         private readonly IGameBridge game;
         private readonly GateSettings settings;
 
+        /// <summary>Lap list penalty note: "+10s" with a ring per missed checkpoint and a cross per crash, or in words.</summary>
+        private void SetPenalty(HudModel.LapRow row, double penalty, int missed, int crashes)
+        {
+            row.Note = $"+{penalty:0.#}s";
+            if (settings.PenaltyIcons)
+            {
+                row.MissedIcons = missed;
+                row.CrashIcons = crashes;
+                return;
+            }
+            var parts = new System.Collections.Generic.List<string>();
+            if (missed > 0) parts.Add($"{missed} missed");
+            if (crashes > 0) parts.Add($"{crashes} crash{(crashes == 1 ? "" : "es")}");
+            if (parts.Count > 0) row.Note += "  " + string.Join(", ", parts);
+        }
+
         public HudRenderer(IGameBridge game, GateSettings settings)
         {
             this.game = game;
@@ -44,6 +60,7 @@ namespace RaceDisplay.Core
                 CountdownColour = view?.CountdownColour ?? HudColor.White,
                 Flash = view?.Flash,
                 SwapSides = settings.SwapSides,
+                TimerInCorner = settings.TimerInCorner,
                 HideGameHud = settings.RaceHudOnly,
             };
 
@@ -87,7 +104,7 @@ namespace RaceDisplay.Core
             if (timer.State == TimerState.Finished)
             {
                 model.Results = view?.Results;
-                model.Splits = BuildRaceSplits(timer, view?.Record, view?.LapSpeeds, view?.LapStats);
+                model.Splits = BuildRaceSplits(timer, view?.Record, view?.LapSpeeds, view?.LapStats, null, view);
                 if (settings.ShowRaceStats && view?.RaceStats != null && view.RaceStats.Count > 0)
                     model.RaceStats = new System.Collections.Generic.List<(string, string, HudColor)>(view.RaceStats);
             }
@@ -217,16 +234,28 @@ namespace RaceDisplay.Core
         private HudModel.SplitsPanel BuildRaceSplits(LapTimer timer, GateSettings.CourseRecord record,
             System.Collections.Generic.IReadOnlyList<(double Top, double Avg)> speeds,
             System.Collections.Generic.IReadOnlyList<LapStats> lapStats = null,
-            System.Collections.Generic.IReadOnlyList<(string Label, string Value, HudColor Colour)> raceStats = null)
+            System.Collections.Generic.IReadOnlyList<(string Label, string Value, HudColor Colour)> raceStats = null,
+            RaceView view = null)
         {
             var laps = timer.Laps;
             if (laps.Count == 0) return null;
+            // Last column: this race's best for the row against the course best before the race (- = gained).
+            bool vsBest = view != null && (view.SectorsBefore != null || view.SplitsBefore != null || view.LapBefore.HasValue);
+            void AddVs(HudModel.SplitRow row, double? raceBest, double? before)
+            {
+                if (!vsBest) return;
+                if (!raceBest.HasValue || !before.HasValue) { row.Cells.Add(("", HudColor.Grey)); return; }
+                double d = raceBest.Value - before.Value;
+                row.Cells.Add((Math.Abs(d) < 0.0005 ? "0.000" : LapTimer.FormatDelta(d), d < -0.0005 ? HudColor.Purple : d > 0.0005 ? HudColor.Red : HudColor.White));
+            }
+            void AddBlank(HudModel.SplitRow row) { if (vsBest) row.Cells.Add(("", HudColor.Grey)); }
 
             int first = Math.Max(0, laps.Count - MaxSplitColumns);
             bool sectors = settings.SectorTable && timer.Checkpoints.Count > 0;
             string kind = sectors ? "SECTORS" : "SPLITS";
             var panel = new HudModel.SplitsPanel { Title = first > 0 ? $"{kind} (last {MaxSplitColumns} laps)" : kind };
             for (int l = first; l < laps.Count; l++) panel.Headers.Add($"L{l + 1}");
+            if (vsBest) panel.Headers.Add("VS BEST");
 
             if (sectors)
             {
@@ -249,6 +278,10 @@ namespace RaceDisplay.Core
                               : Math.Abs(v.Value - raceBest.Value) < 1e-9 ? HudColor.Green : HudColor.White;
                         row.Cells.Add((ShortTime(v.Value), c));
                     }
+                    double? allBest = null;
+                    for (int l = 0; l < laps.Count; l++)
+                        if (lapSectors[l][k].HasValue && (!allBest.HasValue || lapSectors[l][k].Value < allBest.Value)) allBest = lapSectors[l][k];
+                    AddVs(row, allBest, view?.SectorsBefore != null && k < view.SectorsBefore.Count ? view.SectorsBefore[k] : null);
                     panel.Rows.Add(row);
                 }
             }
@@ -271,6 +304,13 @@ namespace RaceDisplay.Core
                           : Math.Abs(v.Value - fastest.Value) < 1e-9 ? HudColor.Green : HudColor.White;
                     row.Cells.Add((LapTimer.Format(v.Value), c));
                 }
+                double? allBest = null;
+                foreach (var lp in laps)
+                {
+                    double? v = i < lp.Splits.Length ? lp.Splits[i] : null;
+                    if (v.HasValue && (!allBest.HasValue || v.Value < allBest.Value)) allBest = v;
+                }
+                AddVs(row, allBest, view?.SplitsBefore != null && i < view.SplitsBefore.Count ? view.SplitsBefore[i] : null);
                 panel.Rows.Add(row);
             }
 
@@ -285,6 +325,9 @@ namespace RaceDisplay.Core
                       : Math.Abs(t - bestLap) < 1e-9 ? HudColor.Green : HudColor.Yellow;
                 lapRow.Cells.Add((LapTimer.Format(t), c));
             }
+            double raceBestLap = double.MaxValue;
+            foreach (var lp in laps) raceBestLap = Math.Min(raceBestLap, lp.Time);
+            AddVs(lapRow, raceBestLap, view?.LapBefore);
             panel.Rows.Add(lapRow);
 
             // Top and average speed per lap.
@@ -299,6 +342,7 @@ namespace RaceDisplay.Core
                     top.Cells.Add((GameOptions.Speed(speeds[l].Top), Math.Abs(speeds[l].Top - bestTop) < 1e-9 ? HudColor.Green : HudColor.White));
                     avg.Cells.Add((GameOptions.Speed(speeds[l].Avg), Math.Abs(speeds[l].Avg - bestAvg) < 1e-9 ? HudColor.Green : HudColor.White));
                 }
+                AddBlank(top); AddBlank(avg);
                 panel.Rows.Add(top);
                 panel.Rows.Add(avg);
             }
@@ -321,6 +365,7 @@ namespace RaceDisplay.Core
                     dist.Cells.Add((st.Distance >= 1000 ? $"{st.Distance / 1000:0.00} km" : $"{st.Distance:0} m",
                         laps.Count - first > 1 && Math.Abs(st.Distance - shortest) < 1e-6 ? HudColor.Green : HudColor.White));
                 }
+                AddBlank(gMax); AddBlank(gTurn); AddBlank(brake); AddBlank(dist);
                 panel.Rows.Add(gMax);
                 panel.Rows.Add(gTurn);
                 panel.Rows.Add(brake);
@@ -409,16 +454,12 @@ namespace RaceDisplay.Core
                 };
                 if (penalised)
                 {
-                    row.Note = $"+{laps[i].Penalty:0.#}s";
-                    row.MissedIcons = laps[i].MissedCheckpoints;
-                    row.CrashIcons = laps[i].Crashes;
+                    SetPenalty(row, laps[i].Penalty, laps[i].MissedCheckpoints, laps[i].Crashes);
                 }
                 else if (current && timer.CurrentLapPenalty > 0)
                 {
                     // Penalties so far this lap: skipped checkpoints count as soon as they show MISSED in the splits.
-                    row.Note = $"+{timer.CurrentLapPenalty:0.#}s";
-                    row.MissedIcons = timer.MissedThisLap;
-                    row.CrashIcons = timer.CrashesThisLap;
+                    SetPenalty(row, timer.CurrentLapPenalty, timer.MissedThisLap, timer.CrashesThisLap);
                 }
                 else if (!current && !isBest && best.HasValue && laps.Count > 1)
                 {

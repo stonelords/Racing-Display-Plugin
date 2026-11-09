@@ -152,9 +152,76 @@ namespace RaceDisplay
                 }
                 catch (Exception e) { PluginLog.Error("Couldn't patch CreateInGameMenuScreen", e); }
 
+            // Starting a world from the Workshop screen: remember which download it was (for its race course).
+            var worldDetail = AccessTools.TypeByName("Keen.Game2.Client.UI.Shared.UGC.Detail.DetailActions.WorldDetailViewModel");
+            Patch(harmony, worldDetail == null ? null : AccessTools.Method(worldDetail, "Start"),
+                nameof(WorkshopWorldStartPostfix), "WorldDetailViewModel.Start (world started from the Workshop)");
+            // New Game > scenario / Workshop world list: Start, and the quick action on a list item.
+            var scenarioSelection = AccessTools.TypeByName("Keen.Game2.Client.UI.Menu.ScenarioSelection.ScenarioSelectionScreenViewModel");
+            foreach (var name in new[] { "StartAction", "ProcessQuickAction" })
+            {
+                var m = scenarioSelection == null ? null : AccessTools.Method(scenarioSelection, name);
+                if (m == null) { PluginLog.Error("Patch target not found: ScenarioSelectionScreenViewModel." + name); continue; }
+                try
+                {
+                    harmony.Patch(m, prefix: new HarmonyMethod(typeof(Patches), nameof(WorldItemStartPrefix)));
+                    PluginLog.Info($"Patched ScenarioSelectionScreenViewModel.{name} (world started from New Game)");
+                }
+                catch (Exception e) { PluginLog.Error("Couldn't patch ScenarioSelectionScreenViewModel." + name, e); }
+            }
+
             var gameMenu = AccessTools.TypeByName("Keen.Game2.Client.UI.Menu.GameMenu");
             Patch(harmony, gameMenu == null ? null : AccessTools.Method(gameMenu, "UpdateButtons"),
                 nameof(PauseMenuPostfix), "GameMenu.UpdateButtons (pause menu button)");
+        }
+
+        /// <summary>
+        /// The Workshop download the next world was started from: its ids as text (the item id and the game's
+        /// container name for it), and when. Only set when a world is started from the Workshop screen.
+        /// </summary>
+        public static volatile string[] WorkshopStartIds;
+        public static DateTime WorkshopStartAt;
+
+        private static void WorkshopWorldStartPostfix(object __instance) =>
+            RememberStartedItem(AccessTools.Field(__instance.GetType(), "_viewModel")?.GetValue(__instance), "Workshop details");
+
+        // StartAction(IUGCItemViewModel) / ProcessQuickAction(WorldViewModel): the item is the first argument.
+        private static void WorldItemStartPrefix(object[] __args) =>
+            RememberStartedItem(__args != null && __args.Length > 0 ? __args[0] : null, "New Game list");
+
+        /// <summary>
+        /// Notes every id-like value of the world item being started (and of its Model): the game's ids for it,
+        /// which for a Workshop world include the Steam item id somewhere. Logged, so it's clear what was found.
+        /// </summary>
+        private static void RememberStartedItem(object item, string from)
+        {
+            try
+            {
+                if (item == null) return;
+                var ids = new System.Collections.Generic.List<string>();
+                void Collect(object o, int depth)
+                {
+                    if (o == null || depth > 1) return;
+                    foreach (var prop in o.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+                    {
+                        if (prop.GetIndexParameters().Length > 0) continue;
+                        object v;
+                        try { v = prop.GetValue(o); } catch { continue; }
+                        if (v == null) continue;
+                        if (v is string || v.GetType().IsPrimitive || v.GetType().Name.Contains("Id") || prop.Name.Contains("Id") || prop.Name.Contains("ID"))
+                        {
+                            ids.Add(v.ToString());
+                            if (AccessTools.Field(v.GetType(), "Name")?.GetValue(v) is string n) ids.Add(n);
+                        }
+                        else if (prop.Name == "Model") Collect(v, depth + 1);
+                    }
+                }
+                Collect(item, 0);
+                WorkshopStartIds = ids.Where(x => !string.IsNullOrWhiteSpace(x) && x.Any(char.IsDigit)).Distinct().Take(40).ToArray();
+                WorkshopStartAt = DateTime.Now;
+                PluginLog.Info($"World started ({from}, {item.GetType().Name}): " + string.Join(" | ", WorkshopStartIds));
+            }
+            catch (Exception e) { PluginLog.Error("Couldn't read which world was started", e); }
         }
 
         private static bool PauseMenuOpeningPrefix(ref Keen.VRage.Library.Utils.IObservableDisposable __result)

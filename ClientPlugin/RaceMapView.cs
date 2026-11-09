@@ -69,6 +69,63 @@ namespace RaceDisplay
             return chip;
         }
 
+        // ---- the game's own map screen bits (Fast Travel, "Map Data Unavailable", its side panels) hidden while the
+        // Race Map shows, and put back as soon as it doesn't.
+        private readonly List<IDisposable> hiddenOverlays = new List<IDisposable>();
+        private readonly HashSet<Visual> hiddenVisuals = new HashSet<Visual>();
+        private long overlaysCheckedAt;
+
+        private void HideMapOverlays()
+        {
+            // Looked for when the page shows, then every couple of seconds (the game may add them a moment later).
+            long now = Environment.TickCount64;
+            if (now - overlaysCheckedAt < 2000) return;
+            overlaysCheckedAt = now;
+            try
+            {
+                if (!(this.GetVisualRootSafe() is Visual root)) return;
+                void Hide(Visual v)
+                {
+                    if (!hiddenVisuals.Add(v)) return;
+                    hiddenOverlays.Add(v.SetValue(Visual.IsVisibleProperty, false, Avalonia.Data.BindingPriority.Animation));
+                }
+                void Walk(Visual v, int depth)
+                {
+                    if (v == null || depth > 40 || ReferenceEquals(v, this)) return;   // never ours
+                    bool holdsUs = Avalonia.VisualTree.VisualExtensions.IsVisualAncestorOf(v, this);
+                    string type = v.GetType().FullName ?? "";
+                    if (!holdsUs)
+                    {
+                        // The map screen's own views (overlay, you-are-here, sector progress, GPS panels...).
+                        if (type.StartsWith("Keen.Game2.Client.UI.MapScreen.", StringComparison.Ordinal)) { Hide(v); return; }
+                        if (v is TextBlock t && t.Text != null && (t.Text.Contains("Map Data Unavailable") || t.Text == "Fast Travel"))
+                        {
+                            // The text, or the button it's on.
+                            Visual target = t;
+                            foreach (var a in Avalonia.VisualTree.VisualExtensions.GetVisualAncestors(t))
+                            {
+                                if (a is Button) { target = a; break; }
+                                if (Avalonia.VisualTree.VisualExtensions.IsVisualAncestorOf(a, this)) break;
+                            }
+                            Hide(target);
+                            return;
+                        }
+                    }
+                    foreach (var child in Avalonia.VisualTree.VisualExtensions.GetVisualChildren(v)) Walk(child, depth + 1);
+                }
+                Walk(root, 0);
+            }
+            catch (Exception e) { PluginLog.Error("Race Map: couldn't hide the map screen's own panels", e); }
+        }
+
+        private void ShowMapOverlays()
+        {
+            foreach (var undo in hiddenOverlays) { try { undo?.Dispose(); } catch { } }
+            hiddenOverlays.Clear();
+            hiddenVisuals.Clear();
+            overlaysCheckedAt = 0;
+        }
+
         public RaceMapView()
         {
             Margin = new Thickness(0, 10, 0, 10);
@@ -108,7 +165,7 @@ namespace RaceDisplay
 
             timer = new DispatcherTimer(TimeSpan.FromMilliseconds(100), DispatcherPriority.Background, (_, __) => Tick());
             AttachedToVisualTree += (_, __) => { timer.Start(); Tick(); };
-            DetachedFromVisualTree += (_, __) => { timer.Stop(); shown = false; };
+            DetachedFromVisualTree += (_, __) => { timer.Stop(); shown = false; ShowMapOverlays(); };
         }
 
         private readonly List<(string Name, HudColor Colour, Point Mid, Vector Normal)> sectorInfo = new List<(string, HudColor, Point, Vector)>();
@@ -122,7 +179,8 @@ namespace RaceDisplay
             {
                 bool visible = IsEffectivelyVisible && this.GetVisualRootSafe() != null;
                 shown = visible;
-                if (!visible) return;
+                if (!visible) { ShowMapOverlays(); return; }
+                HideMapOverlays();
                 var mm = latest;
                 empty.IsVisible = mm == null;
                 frame.IsVisible = mm != null;

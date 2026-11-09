@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Avalonia;
 using Avalonia.Animation;
@@ -40,13 +41,22 @@ namespace RaceDisplay
         private TextBlock statsTitle;
         private Grid statsGrid;
         private Border timerBox, infoBox, splitsBox, resultsBox, bestLapBox, bestRaceBox;
-        private TextBlock bestLapValue, bestLapNote, bestRaceTitle, bestRaceValue, bestRaceNote;
+        private TextBlock bestLapValue, bestLapNote, bestRaceValue, bestRaceNote;
         private StackPanel leftColumn;
         private Viewbox leftFit;
-        private StackPanel graphBox, graphLegend;
+        // Timer in the top corner: the timer, best lap, best race, splits and stats move into this column.
+        private Grid topRow;
+        private StackPanel timerColumn, cornerColumn;
+        private Viewbox cornerFit;
+        private StackPanel mapRow, bestStack;   // timer in the corner: minimap with best race / best lap beside it
+        private StackPanel splitsRow;           // timer in the corner: splits with the results beside them (towards the middle)
+        private string placedKey;
+        private StackPanel graphBox;
+        private WrapPanel graphLegend;
         private Canvas graphCanvas;
         private TextBlock graphTitle;
         private HudModel.ResultsPanel graphFor;
+        private int graphPage;
         private Canvas markerLayer;
         private readonly System.Collections.Generic.List<(Border Box, TextBlock Text, TextBlock Sub)> markerPool =
             new System.Collections.Generic.List<(Border, TextBlock, TextBlock)>();
@@ -89,7 +99,7 @@ namespace RaceDisplay
         private Border centreBox;
         private Panel raceDrop;                  // race messages: a tab that drops down under the timer
         private Avalonia.Controls.Shapes.Path raceFill;
-        private double raceDropHeight, raceTextInset;
+        private double raceDropHeight, raceTextInset, raceScale = 1;
         private Grid raceTab;
         private TextBlock raceText, centreText;
 
@@ -136,6 +146,7 @@ namespace RaceDisplay
         }
 
         private Panel attachTarget;
+        private int failures;
 
         private void Apply()
         {
@@ -171,8 +182,18 @@ namespace RaceDisplay
             }
             catch (Exception e)
             {
+                // First tries: build the HUD again from scratch. Only after repeated failures fall back to the
+                // debug-draw panels for the rest of the session.
+                failures++;
+                if (failures <= 3)
+                {
+                    PluginLog.Error($"Game UI HUD failed (try {failures} of 3); rebuilding it", e);
+                    builtScale = -1;
+                    lastSignature = null;
+                    return;
+                }
                 failed = true;
-                PluginLog.Error("Game UI HUD failed; falling back to debug-draw panels", e);
+                PluginLog.Error("Game UI HUD failed again; falling back to debug-draw panels", e);
                 try { if (root != null) root.IsVisible = false; } catch { /* ignore */ }
             }
         }
@@ -274,14 +295,13 @@ namespace RaceDisplay
             bestLapBox = SideBox(s, "BEST LAP", null, bestLapValue, HorizontalAlignment.Right);
             bestLapNote = Label(13 * s, Brush(HudColor.Purple));
             ((StackPanel)bestLapBox.Child).Children.Add(bestLapNote);
-            bestRaceTitle = Label(15 * s, Grey);
             bestRaceValue = Label(24 * s, Brush(HudColor.Yellow), FontWeight.Bold);
-            bestRaceBox = SideBox(s, "BEST RACE", bestRaceTitle, bestRaceValue, HorizontalAlignment.Left);
+            bestRaceBox = SideBox(s, "BEST RACE", null, bestRaceValue, HorizontalAlignment.Left);   // no "3 LAPS" line
             bestRaceNote = Label(13 * s, Brush(HudColor.Purple));
             ((StackPanel)bestRaceBox.Child).Children.Add(bestRaceNote);
 
             // Three columns keep the timer exactly centred whatever the side panels' widths.
-            var topRow = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+            topRow = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
             topRow.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
             topRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
             topRow.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
@@ -315,7 +335,8 @@ namespace RaceDisplay
             raceText.TextWrapping = TextWrapping.Wrap;
             raceText.TextAlignment = TextAlignment.Center;
             raceTextInset = raceDropHeight * 0.9;
-            raceText.Margin = new Thickness(raceTextInset, 4 * s, raceTextInset, 6 * s);
+            raceScale = s;
+            raceText.Margin = new Thickness(0, 4 * s, 0, 6 * s);
             raceTab.Children.Add(raceFill);
             raceTab.Children.Add(raceEdge);
             raceTab.Children.Add(raceText);
@@ -333,7 +354,7 @@ namespace RaceDisplay
             {
                 new DoubleTransition { Property = Layoutable.HeightProperty, Duration = TimeSpan.FromMilliseconds(220) },
             };
-            var timerColumn = new StackPanel { Children = { timerBox, raceDrop } };
+            timerColumn = new StackPanel { Children = { timerBox, raceDrop } };
             // The tab is exactly as wide as the timer box (less its insets): it never makes the timer column wider.
             raceDrop.Width = 0;
             timerBox.PropertyChanged += (_, e) =>
@@ -375,7 +396,8 @@ namespace RaceDisplay
             lapsHeader.HorizontalAlignment = HorizontalAlignment.Right;
             lapRows = new StackPanel { Spacing = 3 * s };
             lapsBox = Box(s);
-            lapsBox.Width = 400 * s;
+            // Only as wide as it needs to be: grows when a lap has penalty notes.
+            lapsBox.MinWidth = 210 * s;
             lapsBox.Child = new StackPanel { Spacing = 6 * s, Children = { lapsHeader, lapRows } };
 
             // ---- centre message, top of row 2 (30%)
@@ -424,9 +446,10 @@ namespace RaceDisplay
             resultsBox.Width = 400 * s;
             resultsBox.Padding = new Thickness(18 * s, 10 * s, 18 * s, 14 * s);
             // Speed graph: speed round the lap (left = start, right = finish) for the best lap and the record.
-            graphTitle = Label(14 * s, Grey);
+            graphTitle = Label(13 * s, Grey);
+            graphTitle.TextWrapping = TextWrapping.Wrap;
             graphCanvas = new Canvas { Width = 364 * s, Height = 110 * s, ClipToBounds = true };
-            graphLegend = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 * s };
+            graphLegend = new WrapPanel { Orientation = Orientation.Horizontal, MaxWidth = 364 * s };
             graphBox = new StackPanel { Spacing = 4 * s, Margin = new Thickness(0, 6 * s, 0, 0), Children = { graphTitle, graphCanvas, graphLegend } };
             resultsSubtitle = Label(15 * s, Brush(HudColor.Cyan));
             resultsSubtitle.HorizontalAlignment = HorizontalAlignment.Center;
@@ -499,6 +522,19 @@ namespace RaceDisplay
             root.Children.Add(leftFit);
             root.Children.Add(splitsBox);
             root.Children.Add(statsBox);
+            cornerColumn = new StackPanel { Spacing = 10 * s, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
+            cornerFit = new Viewbox
+            {
+                Stretch = Stretch.Uniform,
+                StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(30 * s, 30 * s, 30 * s, 30 * s),
+                Child = cornerColumn,
+            };
+            Grid.SetRowSpan(cornerFit, 3);
+            root.Children.Add(cornerFit);
+            placedKey = null; mapRow = null; bestStack = null; splitsRow = null;
             root.Children.Add(centreBox);
             root.Children.Add(countdownText);
             markerPool.Clear();
@@ -506,6 +542,136 @@ namespace RaceDisplay
 
             lastSignature = null;
             if (oldParent != null) Attach(oldParent);
+        }
+
+        /// <summary>
+        /// Moves the panels between their usual places (timer top centre with the best times beside it, minimap and
+        /// lap list on the left, splits and stats on the right) and the corner layout: timer with the lap list under
+        /// it in one top corner; minimap with best race and best lap stacked beside it, and the splits under, in the other.
+        /// </summary>
+        private const double CornerWidth = 380;   // the corner column, before HUD scale
+
+        private void PlaceTimer(bool corner, bool swap, double s)
+        {
+            string key = corner + "|" + swap;
+            if (placedKey == key) return;
+            placedKey = key;
+            var minimap = (Control)minimapBox;
+            foreach (Control c in new Control[] { timerColumn, bestLapBox, bestRaceBox, splitsBox, statsBox, lapsBox, minimap, resultsBox })
+                (c.Parent as Panel)?.Children.Remove(c);
+            // The holders too: they're put back in their new places below (a control can only have one parent).
+            foreach (Panel holder in new Panel[] { mapRow, bestStack, splitsRow })
+            {
+                if (holder == null) continue;
+                (holder.Parent as Panel)?.Children.Remove(holder);
+                holder.Children.Clear();
+            }
+
+            if (corner)
+            {
+                // Timer corner: the timer with the lap list under it. The other corner: the minimap with best race
+                // and best lap stacked beside it (towards the middle), and the splits under both.
+                var edge = swap ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+                foreach (Control c in new Control[] { timerColumn, lapsBox, statsBox })
+                {
+                    c.HorizontalAlignment = edge;
+                    c.VerticalAlignment = VerticalAlignment.Top;
+                    c.Margin = new Thickness(0);
+                    cornerColumn.Children.Add(c);
+                }
+                timerBox.HorizontalAlignment = HorizontalAlignment.Stretch;
+                timerColumn.Width = CornerWidth * s;
+                statsBox.MinWidth = CornerWidth * s;
+
+                bestStack ??= new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+                bestStack.Spacing = 8 * s;
+                foreach (var box in new[] { bestRaceBox, bestLapBox })
+                {
+                    box.HorizontalAlignment = HorizontalAlignment.Stretch;
+                    box.VerticalAlignment = VerticalAlignment.Top;
+                    box.Margin = new Thickness(0);
+                    box.Padding = new Thickness(12 * s, 4 * s, 16 * s, 6 * s);
+                    Grid.SetColumnSpan(box, 1);
+                    if (box.Child is StackPanel st)
+                    {
+                        st.Spacing = 0;
+                        foreach (var tb in st.Children) tb.HorizontalAlignment = HorizontalAlignment.Left;
+                    }
+                    bestStack.Children.Add(box);
+                }
+                bestLapValue.FontSize = bestRaceValue.FontSize = 26 * s;
+
+                mapRow ??= new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+                mapRow.Spacing = 14 * s;
+                mapRow.HorizontalAlignment = swap ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+                if (swap) { mapRow.Children.Add(bestStack); mapRow.Children.Add(minimap); }
+                else { mapRow.Children.Add(minimap); mapRow.Children.Add(bestStack); }
+
+                splitsBox.HorizontalAlignment = HorizontalAlignment.Stretch;
+                splitsBox.VerticalAlignment = VerticalAlignment.Top;
+                splitsBox.Margin = new Thickness(0);
+                splitsBox.MinWidth = 0;
+                // The results go beside the splits (towards the middle), not under them, so the column stays clear of
+                // the game's own panels in the bottom corners.
+                splitsRow ??= new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Top };
+                splitsRow.Spacing = 10 * s;
+                splitsRow.HorizontalAlignment = swap ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+                resultsBox.VerticalAlignment = VerticalAlignment.Top;
+                if (swap) { splitsRow.Children.Add(resultsBox); splitsRow.Children.Add(splitsBox); }
+                else { splitsRow.Children.Add(splitsBox); splitsRow.Children.Add(resultsBox); }
+                splitsBox.HorizontalAlignment = HorizontalAlignment.Left;
+                leftColumn.Children.Insert(0, mapRow);
+                leftColumn.Children.Insert(1, splitsRow);
+                // Room left at the bottom for the game's own panels (toolbar, ship status): if the columns are taller
+                // than what's left, they're scaled down to fit.
+                leftFit.Margin = cornerFit.Margin = new Thickness(30 * s, 30 * s, 30 * s, 260 * s);
+            }
+            else
+            {
+                timerBox.HorizontalAlignment = HorizontalAlignment.Center;
+                timerColumn.HorizontalAlignment = HorizontalAlignment.Stretch;
+                timerColumn.Width = double.NaN;
+                splitsBox.MinWidth = 220 * s;
+                statsBox.MinWidth = 0;
+                bestLapBox.HorizontalAlignment = HorizontalAlignment.Right;
+                bestRaceBox.HorizontalAlignment = HorizontalAlignment.Left;
+                bestLapBox.Margin = new Thickness(0, 0, 10 * s, 0);
+                bestRaceBox.Margin = new Thickness(10 * s, 0, 0, 0);
+                bestLapValue.FontSize = bestRaceValue.FontSize = 24 * s;
+                foreach (var box in new[] { bestLapBox, bestRaceBox })
+                {
+                    box.Padding = new Thickness(14 * s, 8 * s, 14 * s, 10 * s);
+                    box.VerticalAlignment = VerticalAlignment.Top;
+                    Grid.SetColumnSpan(box, 1);
+                    if (box.Child is StackPanel st)
+                    {
+                        st.Spacing = 2 * s;
+                        foreach (var tb in st.Children) tb.HorizontalAlignment = HorizontalAlignment.Left;
+                    }
+                }
+                Grid.SetColumn(bestLapBox, 0);
+                Grid.SetColumn(timerColumn, 1);
+                Grid.SetColumn(bestRaceBox, 2);
+                topRow.Children.Add(bestLapBox);
+                topRow.Children.Add(timerColumn);
+                topRow.Children.Add(bestRaceBox);
+                lapsBox.HorizontalAlignment = swap ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+                lapsBox.Margin = new Thickness(0);
+                leftColumn.Children.Insert(0, minimap);
+                leftColumn.Children.Insert(1, lapsBox);
+                leftColumn.Children.Add(resultsBox);
+                resultsBox.IsVisible = true;
+                leftFit.Margin = cornerFit.Margin = new Thickness(30 * s, 30 * s, 30 * s, 30 * s);
+                splitsBox.VerticalAlignment = VerticalAlignment.Top;
+                Grid.SetRow(splitsBox, 1);
+                Grid.SetRowSpan(splitsBox, 2);
+                statsBox.VerticalAlignment = VerticalAlignment.Top;
+                Grid.SetRow(statsBox, 0);
+                Grid.SetRowSpan(statsBox, 3);
+                int at = root.Children.IndexOf(leftFit) + 1;
+                root.Children.Insert(at, splitsBox);
+                root.Children.Insert(at + 1, statsBox);
+            }
         }
 
         // ---------------------------------------------------------------- minimap
@@ -1001,15 +1167,23 @@ namespace RaceDisplay
             centreBox.Background = fill;
             splitsBox.Background = fill;
             statsBox.Background = fill;
-            statsBox.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Left : HorizontalAlignment.Right;
-            statsBox.Margin = m.SwapSides ? new Thickness(30 * s, 30 * s, 0, 0) : new Thickness(0, 30 * s, 30 * s, 0);
             resultsBox.Background = fill;
+            PlaceTimer(m.TimerInCorner, m.SwapSides, s);
+            if (!m.TimerInCorner)
+            {
+                statsBox.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+                statsBox.Margin = m.SwapSides ? new Thickness(30 * s, 30 * s, 0, 0) : new Thickness(0, 30 * s, 30 * s, 0);
+            }
+            cornerFit.HorizontalAlignment = cornerColumn.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Left : HorizontalAlignment.Right;
 
             // Sides: lap list + results left and splits right, or swapped.
             leftColumn.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Right : HorizontalAlignment.Left;
             leftFit.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-            splitsBox.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Left : HorizontalAlignment.Right;
-            splitsBox.Margin = m.SwapSides ? new Thickness(30 * s, 0, 0, 0) : new Thickness(0, 0, 30 * s, 0);
+            if (!m.TimerInCorner)
+            {
+                splitsBox.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+                splitsBox.Margin = m.SwapSides ? new Thickness(30 * s, 0, 0, 0) : new Thickness(0, 0, 30 * s, 0);
+            }
             minimapBox.HorizontalAlignment = m.SwapSides ? HorizontalAlignment.Right : HorizontalAlignment.Left;
 
             UpdateMarkers(m, s);
@@ -1030,7 +1204,11 @@ namespace RaceDisplay
                 tLabel.Text = t.Label;
                 tBig.Text = t.Big;
                 tBig.Foreground = Brush(t.BigColour);
-                tFooter.Text = t.Footer ?? "";
+                // Corner layout (narrow timer): one hint per line, so none is cut off.
+                bool narrow = placedKey != null && placedKey.StartsWith("True");
+                tFooter.Text = narrow ? string.Join("\n", (t.Footer ?? "").Split(new[] { "   " }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()))
+                                      : t.Footer ?? "";
+                tFooter.TextAlignment = TextAlignment.Center;
                 tFooter.IsVisible = t.Footer != null;
                 if (t.Hint != null)
                 {
@@ -1044,7 +1222,6 @@ namespace RaceDisplay
                 bestRaceNote.Text = t.BestRaceNote ?? "";
                 bestRaceNote.IsVisible = t.BestRaceNote != null;
                 bestRaceValue.Text = t.BestRace ?? "";
-                bestRaceTitle.Text = t.BestRaceLabel ?? "";
 
                 tDelta.IsVisible = t.Delta != null;
                 tDelta.Text = t.Delta ?? "";
@@ -1090,16 +1267,32 @@ namespace RaceDisplay
                 // Rebuilt only when the table changes: heading row, then one row per checkpoint.
                 splitsHeader.Text = sp.Title;
                 splitRows.Children.Clear();
+                // Column widths fit what's in them (with room for the longest time the column can get), so there's
+                // no big gap between the checkpoint names and the first column.
+                int cols = sp.Headers.Count;
+                foreach (var r in sp.Rows) cols = Math.Max(cols, r.Cells.Count);
+                var widths = new double[cols + 1];
+                int nameChars = 4;
+                foreach (var r in sp.Rows) nameChars = Math.Max(nameChars, (r.Name ?? "").Length);
+                widths[0] = nameChars * 8.6 * s + 12 * s;
+                for (int c = 0; c < cols; c++)
+                {
+                    string h = c < sp.Headers.Count ? sp.Headers[c] ?? "" : "";
+                    int chars = h == "GAP" || h == "VS BEST" ? 7 : h == "SECTOR" ? 6 : 9;   // "+12.345", "12.345", "01:32.384"
+                    chars = Math.Max(chars, (int)Math.Ceiling(h.Length * 0.95));
+                    foreach (var r in sp.Rows) if (c < r.Cells.Count) chars = Math.Max(chars, (r.Cells[c].Text ?? "").Length);
+                    widths[c + 1] = chars * 8.6 * s + 12 * s;
+                }
                 if (sp.Headers.Count > 0)
                 {
-                    var head = SplitGrid(s, sp.Headers.Count);
+                    var head = SplitGrid(widths);
                     for (int c = 0; c < sp.Headers.Count; c++)
                         AddCell(head, c + 1, sp.Headers[c], Grey, 14 * s);
                     splitRows.Children.Add(head);
                 }
                 foreach (var r in sp.Rows)
                 {
-                    var g = SplitGrid(s, r.Cells.Count);
+                    var g = SplitGrid(widths);
                     var name = Label(15 * s, Brush(r.NameColour));
                     name.Text = r.Name;
                     name.VerticalAlignment = VerticalAlignment.Center;
@@ -1169,6 +1362,8 @@ namespace RaceDisplay
             }
             if (res != null) UpdateGraph(res, s);
             resultsBox.Opacity = res != null ? 1 : 0;
+            // Corner layout: beside the splits, so it mustn't take up room while there are no results.
+            if (placedKey != null && placedKey.StartsWith("True")) resultsBox.IsVisible = res != null;
 
             UpdateMinimap(m.Minimap, s, fill);
 
@@ -1218,6 +1413,11 @@ namespace RaceDisplay
             double tabH = raceDropHeight;
             if (raceDrop.Width > 0)
             {
+                // The text gets a fixed width that clears the tab's slanted sides (8% of the width each side at the
+                // bottom), so a long message wraps onto another line instead of running past the edge and being cut off.
+                double textW = Math.Max(40 * raceScale, raceDrop.Width * 0.84 - 16 * raceScale);
+                if (double.IsNaN(raceText.Width) || Math.Abs(raceText.Width - textW) > 0.5) raceText.Width = textW;
+                raceText.InvalidateMeasure();
                 // (The text's margins are part of its measured size.)
                 raceText.Measure(new Size(raceDrop.Width, double.PositiveInfinity));
                 tabH = Math.Max(raceDropHeight, raceText.DesiredSize.Height);
@@ -1229,78 +1429,202 @@ namespace RaceDisplay
         }
 
 
-        /// <summary>Speed graph in the results: one line per lap, speed against how far round the lap.</summary>
+        /// <summary>
+        /// Results graph. Two pages that take turns (every 5 s): speed round the lap (this race against the
+        /// best, shaded green where you were faster and red where slower) and the time gap round the lap.
+        /// </summary>
         private void UpdateGraph(HudModel.ResultsPanel res, double s)
         {
-            if (ReferenceEquals(res, graphFor)) return; // same results as last time: already drawn
+            if (ReferenceEquals(res, graphFor) && res.GraphPage == graphPage) return; // already drawn
             graphFor = res;
+            graphPage = res.GraphPage;
             graphBox.IsVisible = res.Graph.Count > 0 && res.GraphMaxSpeed > 0;
             if (!graphBox.IsVisible) return;
-            double w = graphCanvas.Width, h = graphCanvas.Height, max = res.GraphMaxSpeed * 1.05;
-            graphTitle.Text = $"SPEED ROUND THE LAP   (top {RaceDisplay.Core.GameOptions.Speed(res.GraphMaxSpeed)})";
+            double w = graphCanvas.Width, h = graphCanvas.Height;
+            double top = 14 * s;            // room for the checkpoint labels
+            bool gapPage = res.GraphPage == 1 && res.Gap.Count > 1;
+            bool pages = res.Gap.Count > 1;
             graphCanvas.Children.Clear();
-            graphCanvas.Children.Add(new Rectangle { Width = w, Height = h, Fill = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)) });
-            for (int q = 1; q < 4; q++)
-            {
-                double y = h - h * q / 4.0;
-                graphCanvas.Children.Add(new Line
-                {
-                    StartPoint = new Point(0, y), EndPoint = new Point(w, y),
-                    Stroke = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)), StrokeThickness = 1,
-                });
-            }
             graphLegend.Children.Clear();
+            graphCanvas.Children.Add(new Rectangle { Width = w, Height = h, Fill = UiBrushes.Get(170, 0, 0, 0) });
 
-            // Checkpoints of the first (main) lap: a faint dashed line down the graph with its number at the top.
-            if (res.Graph.Count > 0)
+            // Checkpoints of the graphed lap: a thin line down the graph, labelled CP n (red if missed), FIN at the end.
+            var main = res.Graph[0];
+            int cps = main.Checkpoints.Count + res.MissedCheckpoints.Count;
+            var cpX = new System.Collections.Generic.List<(double X, int N, bool Missed)>();
+            foreach (var (x, _, n) in main.Checkpoints) cpX.Add((x, n, false));
+            // A missed checkpoint has no place on this lap: take it from the other line, else halfway between its neighbours.
+            foreach (int n in res.MissedCheckpoints)
             {
-                var main = res.Graph[0];
-                foreach (var (x, _, n) in main.Checkpoints)
+                double? x = null;
+                for (int k = 1; k < res.Graph.Count && !x.HasValue; k++)
+                    foreach (var c in res.Graph[k].Checkpoints) if (c.Number == n) { x = c.X; break; }
+                if (!x.HasValue)
                 {
-                    double gx = Math.Max(0, Math.Min(1, x)) * w;
-                    graphCanvas.Children.Add(new Line
+                    double lo = 0, hi = 1;
+                    foreach (var c in main.Checkpoints) { if (c.Number < n) lo = Math.Max(lo, c.X); else hi = Math.Min(hi, c.X); }
+                    x = (lo + hi) / 2;
+                }
+                cpX.Add((x.Value, n, true));
+            }
+            bool shortNames = cps > 7;   // "CP 3" when there's room, else just "3"
+            double lastLabelRight = -1;
+            cpX.Sort((p, q) => p.X.CompareTo(q.X));
+            void Marker(double x, string text, IBrush brush, bool dashed)
+            {
+                double gx = Math.Max(0, Math.Min(1, x)) * w;
+                var ln = new Line { StartPoint = new Point(gx, top), EndPoint = new Point(gx, h), Stroke = brush, StrokeThickness = 1 };
+                if (dashed) ln.StrokeDashArray = new Avalonia.Collections.AvaloniaList<double> { 3, 3 };
+                graphCanvas.Children.Add(ln);
+                var lbl = Label(10 * s, brush, FontWeight.Bold);
+                lbl.Text = text;
+                lbl.Measure(Size.Infinity);
+                double left = Math.Max(0, Math.Min(w - lbl.DesiredSize.Width, gx - lbl.DesiredSize.Width / 2));
+                if (left < lastLabelRight + 2 * s) return;   // would overlap the one before: line only
+                lastLabelRight = left + lbl.DesiredSize.Width;
+                Canvas.SetLeft(lbl, left);
+                Canvas.SetTop(lbl, 0);
+                graphCanvas.Children.Add(lbl);
+            }
+            var cpBrush = UiBrushes.Get(120, 255, 170, 60);
+            foreach (var (x, n, missed) in cpX)
+                Marker(x, shortNames ? n.ToString() : $"CP {n}", missed ? Brush(HudColor.Red) : cpBrush, !missed);
+            Marker(1, "FIN", UiBrushes.Get(160, 255, 255, 255), false);
+
+            double plotH = h - top;
+            if (!gapPage)
+            {
+                double max = res.GraphMaxSpeed * 1.05;
+                double Y(double v) => h - Math.Min(1, v / max) * plotH;
+                for (int q = 1; q < 4; q++)
+                {
+                    double y = h - plotH * q / 4.0;
+                    graphCanvas.Children.Add(new Line { StartPoint = new Point(0, y), EndPoint = new Point(w, y), Stroke = UiBrushes.Get(35, 255, 255, 255), StrokeThickness = 1 });
+                }
+                graphTitle.Text = $"SPEED ROUND THE LAP   top {RaceDisplay.Core.GameOptions.Speed(res.GraphMaxSpeed)}" + (pages ? "   (1/2)" : "");
+
+                // Shading between this race and the line it's compared with: green = faster there, red = slower.
+                if (res.Graph.Count > 1)
+                {
+                    var a = res.Graph[0].Points; var b = res.Graph[1].Points;
+                    var green = new StreamGeometry(); var red = new StreamGeometry();
+                    using (var gc = green.Open())
+                    using (var rc = red.Open())
                     {
-                        StartPoint = new Point(gx, 13 * s), EndPoint = new Point(gx, h),
-                        Stroke = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255)), StrokeThickness = 1,
-                        StrokeDashArray = new Avalonia.Collections.AvaloniaList<double> { 3, 3 },
-                    });
-                    var num = Label(10 * s, Brush(HudColor.Orange), FontWeight.Bold);
-                    num.Text = n.ToString();
-                    num.Measure(Size.Infinity);
-                    Canvas.SetLeft(num, Math.Max(0, Math.Min(w - num.DesiredSize.Width, gx - num.DesiredSize.Width / 2)));
-                    Canvas.SetTop(num, 0);
-                    graphCanvas.Children.Add(num);
+                        const int n = 120;
+                        double pa = SpeedAt(a, 0), pb = SpeedAt(b, 0);
+                        for (int i = 1; i <= n; i++)
+                        {
+                            double x0 = (double)(i - 1) / n, x1 = (double)i / n;
+                            double va = SpeedAt(a, x1), vb = SpeedAt(b, x1);
+                            var ctx = (pa + va) >= (pb + vb) ? gc : rc;
+                            ctx.BeginFigure(new Point(x0 * w, Y(pa)), true);
+                            ctx.LineTo(new Point(x1 * w, Y(va)));
+                            ctx.LineTo(new Point(x1 * w, Y(vb)));
+                            ctx.LineTo(new Point(x0 * w, Y(pb)));
+                            ctx.EndFigure(true);
+                            pa = va; pb = vb;
+                        }
+                    }
+                    graphCanvas.Children.Add(new Path { Data = green, Fill = UiBrushes.Get(70, 60, 220, 90) });
+                    graphCanvas.Children.Add(new Path { Data = red, Fill = UiBrushes.Get(70, 230, 60, 60) });
+                }
+
+                // Lines: the compared ones first (underneath), this race on top.
+                for (int k = res.Graph.Count - 1; k >= 0; k--)
+                {
+                    var line = res.Graph[k];
+                    var pts = new System.Collections.Generic.List<Point>();
+                    foreach (var (x, v) in line.Points) pts.Add(new Point(Math.Max(0, Math.Min(1, x)) * w, Y(v)));
+                    graphCanvas.Children.Add(new Polyline { Points = pts, Stroke = Brush(line.Colour), StrokeThickness = (k == 0 ? 2.6 : 2) * s });
+                }
+                foreach (var line in res.Graph) graphLegend.Children.Add(LegendKey(s, Brush(line.Colour), line.Label));
+                if (res.Graph.Count > 1)
+                {
+                    graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 60, 220, 90), "faster", true));
+                    graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 230, 60, 60), "slower", true));
                 }
             }
-
-            foreach (var line in res.Graph)
+            else
             {
+                // Time gap: above the middle line = ahead of the other lap, below = behind.
+                double span = 0.2;
+                foreach (var (_, g) in res.Gap) span = Math.Max(span, Math.Abs(g));
+                span = NiceSpan(span * 1.1);
+                double mid = top + plotH / 2;
+                double Y(double gap) => mid + Math.Max(-1, Math.Min(1, gap / span)) * plotH / 2;   // + (behind) goes down
+                graphCanvas.Children.Add(new Line { StartPoint = new Point(0, mid), EndPoint = new Point(w, mid), Stroke = UiBrushes.Get(140, 255, 255, 255), StrokeThickness = 1 });
+                foreach (double q in new[] { -0.5, 0.5 })
+                {
+                    double y = mid + q * plotH;
+                    graphCanvas.Children.Add(new Line { StartPoint = new Point(0, y), EndPoint = new Point(w, y), Stroke = UiBrushes.Get(35, 255, 255, 255), StrokeThickness = 1 });
+                }
+                var ahead = new StreamGeometry(); var behind = new StreamGeometry();
+                using (var ac = ahead.Open())
+                using (var bc = behind.Open())
+                {
+                    for (int i = 1; i < res.Gap.Count; i++)
+                    {
+                        var (x0, g0) = res.Gap[i - 1]; var (x1, g1) = res.Gap[i];
+                        var ctx = g0 + g1 <= 0 ? ac : bc;
+                        ctx.BeginFigure(new Point(x0 * w, mid), true);
+                        ctx.LineTo(new Point(x0 * w, Y(g0)));
+                        ctx.LineTo(new Point(x1 * w, Y(g1)));
+                        ctx.LineTo(new Point(x1 * w, mid));
+                        ctx.EndFigure(true);
+                    }
+                }
+                graphCanvas.Children.Add(new Path { Data = ahead, Fill = UiBrushes.Get(90, 60, 220, 90) });
+                graphCanvas.Children.Add(new Path { Data = behind, Fill = UiBrushes.Get(90, 230, 60, 60) });
                 var pts = new System.Collections.Generic.List<Point>();
-                foreach (var (x, v) in line.Points) pts.Add(new Point(Math.Max(0, Math.Min(1, x)) * w, h - Math.Min(1, v / max) * h));
-                graphCanvas.Children.Add(new Polyline { Points = pts, Stroke = Brush(line.Colour), StrokeThickness = 2 * s });
+                foreach (var (x, g) in res.Gap) pts.Add(new Point(x * w, Y(g)));
+                graphCanvas.Children.Add(new Polyline { Points = pts, Stroke = Brush(HudColor.White), StrokeThickness = 2 * s });
 
-                // A dot on the line where this lap went through each checkpoint.
-                foreach (var (x, v, _) in line.Checkpoints)
+                // Scale at the left: how many seconds the top and bottom lines are.
+                void Scale(string text, double y, IBrush brush)
                 {
-                    double d = 7 * s;
-                    var dot = new Ellipse
-                    {
-                        Width = d, Height = d,
-                        Fill = Brush(line.Colour),
-                        Stroke = new SolidColorBrush(Color.FromArgb(230, 0, 0, 0)), StrokeThickness = 1,
-                    };
-                    Canvas.SetLeft(dot, Math.Max(0, Math.Min(1, x)) * w - d / 2);
-                    Canvas.SetTop(dot, h - Math.Min(1, v / max) * h - d / 2);
-                    graphCanvas.Children.Add(dot);
+                    var t = Label(10 * s, brush);
+                    t.Text = text;
+                    t.Measure(Size.Infinity);
+                    Canvas.SetLeft(t, 3 * s);
+                    Canvas.SetTop(t, Math.Max(top, Math.Min(h - t.DesiredSize.Height, y - t.DesiredSize.Height / 2)));
+                    graphCanvas.Children.Add(t);
                 }
-
-                var key = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 * s };
-                key.Children.Add(new Rectangle { Width = 14 * s, Height = 3 * s, Fill = Brush(line.Colour), VerticalAlignment = VerticalAlignment.Center });
-                var label = Label(13 * s, Brush(line.Colour));
-                label.Text = line.Label;
-                key.Children.Add(label);
-                graphLegend.Children.Add(key);
+                Scale($"{span:0.0#}s ahead", top + 6 * s, Brush(HudColor.Green));
+                Scale($"{span:0.0#}s behind", h - 6 * s, Brush(HudColor.Red));
+                double end = res.Gap[res.Gap.Count - 1].Gap;
+                graphTitle.Text = $"TIME GAP ROUND THE LAP   vs {res.GapAgainst}   finish {(end <= 0 ? $"{-end:0.000}s ahead" : $"{end:0.000}s behind")}   (2/2)";
+                graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 60, 220, 90), "ahead (gaining time)", true));
+                graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 230, 60, 60), "behind", true));
             }
+        }
+
+        private static double NiceSpan(double v)
+        {
+            foreach (double n in new[] { 0.25, 0.5, 1, 2, 3, 5, 10, 15, 20, 30, 60, 120 }) if (v <= n) return n;
+            return Math.Ceiling(v / 60) * 60;
+        }
+
+        /// <summary>Speed at a share of the lap, from a line's points (in order of share).</summary>
+        private static double SpeedAt(System.Collections.Generic.List<(double X, double Speed)> pts, double x)
+        {
+            if (pts.Count == 0) return 0;
+            if (x <= pts[0].X) return pts[0].Speed;
+            int lo = 0, hi = pts.Count - 1;
+            if (x >= pts[hi].X) return pts[hi].Speed;
+            while (hi - lo > 1) { int m = (lo + hi) / 2; if (pts[m].X <= x) lo = m; else hi = m; }
+            double span = pts[hi].X - pts[lo].X;
+            return span > 1e-9 ? pts[lo].Speed + (pts[hi].Speed - pts[lo].Speed) * (x - pts[lo].X) / span : pts[hi].Speed;
+        }
+
+        private static StackPanel LegendKey(double s, IBrush brush, string text, bool box = false)
+        {
+            var key = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 * s, Margin = new Thickness(0, 0, 12 * s, 2 * s) };
+            key.Children.Add(new Rectangle { Width = (box ? 10 : 14) * s, Height = (box ? 10 : 3) * s, Fill = brush, VerticalAlignment = VerticalAlignment.Center });
+            var label = Label(12 * s, box ? Grey : brush);
+            label.Text = text;
+            key.Children.Add(label);
+            return key;
         }
 
         /// <summary>Checkpoint labels at their place on screen, and the edge arrow to the next checkpoint.</summary>
@@ -1493,13 +1817,11 @@ namespace RaceDisplay
         }
 
         /// <summary>Name column, then <paramref name="cells"/> right-aligned columns of equal minimum width.</summary>
-        private static Grid SplitGrid(double s, int cells)
+        private static Grid SplitGrid(double[] widths)
         {
-            // Fixed widths so the columns line up from row to row, sized to fit "00:00.000" plus a small gap.
+            // Same widths on every row so the columns line up.
             var g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(50 * s, GridUnitType.Pixel)));
-            for (int c = 0; c < cells; c++)
-                g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(92 * s, GridUnitType.Pixel)));
+            foreach (double w in widths) g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(w, GridUnitType.Pixel)));
             return g;
         }
 
@@ -1536,7 +1858,7 @@ namespace RaceDisplay
             var name = Label(17 * s, White);
             var note = Label(14 * s, Brush(HudColor.Red));
             note.VerticalAlignment = VerticalAlignment.Center;
-            var notePanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 * s, VerticalAlignment = VerticalAlignment.Center, Children = { note } };
+            var notePanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 * s, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 14 * s, 0), Children = { note } };
             var time = Label(17 * s, White);
             Grid.SetColumn(name, 0);
             Grid.SetColumn(notePanel, 1);

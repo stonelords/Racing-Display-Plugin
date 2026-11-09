@@ -175,10 +175,10 @@ namespace RaceDisplay
                     if (world != null) saveFolder = DirectSaveFolder(world);
                     if (world != null && saveFolder == null)
                         saveFolder = candidates.FirstOrDefault(c => string.Equals(Path.GetFileName(c.TrimEnd('\\', '/')), world, StringComparison.OrdinalIgnoreCase));
-                    saveFolder = saveFolder
-                              ?? candidates.FirstOrDefault(c => c.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0)
-                              ?? (world != null ? SearchSaveFolder(world) : null)
-                              ?? NewestSaveFolder();
+                    // Only a folder with this world's own name: guessing (the newest save, any save folder) could pick
+                    // another world's folder, and its race course would turn up here. A new world that hasn't been
+                    // saved yet simply has no folder.
+                    saveFolder = saveFolder ?? (world != null ? SearchSaveFolder(world) : null);
                     if (firstTry || saveFolder != null)
                         PluginLog.Info(saveFolder != null ? $"World save folder: {saveFolder}" : "World save folder not found");
                 }
@@ -216,57 +216,6 @@ namespace RaceDisplay
         }
 
         private static string SpaceEngineers2Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SpaceEngineers2");
-
-        /// <summary>
-        /// When the world's name isn't known: the most recently written folder inside a "Saves" folder under
-        /// %AppData%\SpaceEngineers2 (the world you just saved). The folder that directly holds the files is used.
-        /// </summary>
-        private static string NewestSaveFolder()
-        {
-            string root = SpaceEngineers2Folder;
-            if (!Directory.Exists(root)) return null;
-            var savesDirs = new List<string>();
-            void FindSaves(string dir, int depth)
-            {
-                if (depth > 3) return;
-                string[] subs;
-                try { subs = Directory.GetDirectories(dir); } catch { return; }
-                foreach (var sub in subs)
-                {
-                    string n = Path.GetFileName(sub);
-                    if (n.StartsWith(".") || string.Equals(n, "Temp", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (n.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0) savesDirs.Add(sub);
-                    else FindSaves(sub, depth + 1);
-                }
-            }
-            FindSaves(root, 0);
-            string best = null; DateTime bestTime = DateTime.MinValue;
-            void Walk(string dir, int depth)
-            {
-                if (depth > 3) return;
-                string[] subs;
-                try { subs = Directory.GetDirectories(dir); } catch { return; }
-                foreach (var sub in subs)
-                {
-                    string bn = Path.GetFileName(sub);
-                    if (bn.StartsWith(".") || bn.StartsWith("Backup", StringComparison.OrdinalIgnoreCase)) continue;
-                    try
-                    {
-                        // A world folder: has files of its own. Its newest file says when it was last saved.
-                        var files = Directory.GetFiles(sub);
-                        if (files.Length > 0)
-                        {
-                            DateTime t = files.Max(f => File.GetLastWriteTimeUtc(f));
-                            if (t > bestTime) { bestTime = t; best = sub; }
-                        }
-                    }
-                    catch { }
-                    Walk(sub, depth + 1);
-                }
-            }
-            foreach (var d in savesDirs) Walk(d, 0);
-            return best;
-        }
 
         /// <summary>Logs the folders under %AppData%\SpaceEngineers2 (3 levels, names only) once, to see how saves are laid out.</summary>
         private static bool savedTreeLogged;
@@ -376,6 +325,31 @@ namespace RaceDisplay
             forward = new Vec3D(f.X, f.Y, f.Z);
             up = new Vec3D(u.X, u.Y, u.Z);
             return true;
+        }
+
+        // Set when a world is started from the Workshop screen; only good for a few minutes (the world it started).
+        public string[] WorkshopStartIds =>
+            Patches.WorkshopStartIds != null && (DateTime.Now - Patches.WorkshopStartAt).TotalMinutes < 10 ? Patches.WorkshopStartIds : null;
+
+        public void ClearWorkshopStart() => Patches.WorkshopStartIds = null;
+
+        public bool TryGetFacing(out Vec3D forward)
+        {
+            forward = Vec3D.Zero;
+            try
+            {
+                Entity entity = controller?.GetTopControllable()?.Entity;
+                if (entity == null) return false;
+                // In a seat: the seat block's own facing, if it has one.
+                var seat = entity.TryGet<SeatComponent>(default);
+                Entity seatEntity = seat?.Entity;
+                Entity e = seatEntity != null && seatEntity.Data.Has<WorldTransform>() ? seatEntity : entity;
+                if (!e.Data.Has<WorldTransform>()) return false;
+                Vector3 f = EntityTransformFunctions.GetWorldTransform(e.Data).Orientation.GetForward();
+                forward = new Vec3D(f.X, f.Y, f.Z);
+                return forward.Length > 1e-6;
+            }
+            catch (Exception ex) { LogOnce("Facing failed: " + ex.Message); return false; }
         }
 
         public bool TryGetShipVelocity(out Vec3D velocity)
@@ -863,6 +837,72 @@ namespace RaceDisplay
                 return true;
             }
             catch (Exception ex) { LogOnce("Block span failed: " + ex.Message); return false; }
+        }
+
+        /// <summary>
+        /// Moves the ship you're flying so your seat is at <paramref name="seatPosition"/>, facing <paramref name="forward"/>
+        /// with <paramref name="up"/> as up, and stops it. Uses the game's admin teleport (as its debug screens do).
+        /// </summary>
+        public bool TeleportShip(Vec3D seatPosition, Vec3D forward, Vec3D up)
+        {
+            try
+            {
+                if (ownGrid == null || !ownGrid.Data.Has<WorldTransform>()) return false;
+                WorldTransform grid = EntityTransformFunctions.GetWorldTransform(ownGrid.Data);
+                // The seat's frame (falls back to the grid's own if there's no seat).
+                Entity seat = controller?.GetTopControllable()?.Entity?.TryGet<SeatComponent>(default)?.Entity;
+                WorldTransform seatT = seat != null && seat.Data.Has<WorldTransform>() ? EntityTransformFunctions.GetWorldTransform(seat.Data) : grid;
+                Vec3D f = V(seatT.Orientation.GetForward()).Normalized(), u = V(seatT.Orientation.GetUp());
+                u = (u - f * Vec3D.Dot(u, f)).Normalized();
+                Vec3D sd = Vec3D.Cross(f, u);
+                Vec3D df = forward.Normalized(), du = (up - df * Vec3D.Dot(up, df)).Normalized();
+                if (du.Length < 0.5) return false;
+                Vec3D ds = Vec3D.Cross(df, du);
+                // Turn that takes the seat's frame onto the wanted one, applied to the whole grid.
+                Vec3D Turn(Vec3D v) => df * Vec3D.Dot(v, f) + du * Vec3D.Dot(v, u) + ds * Vec3D.Dot(v, sd);
+                Vec3D gf = Turn(V(grid.Orientation.GetForward())), gu = Turn(V(grid.Orientation.GetUp()));
+                Vec3D offset = Turn(ToVec(seatT.Position) - ToVec(grid.Position));
+                Vec3D pos = seatPosition - offset;
+                var target = new WorldTransform(new Vector3D(pos.X, pos.Y, pos.Z),
+                    Quaternion.CreateFromForwardUp(new Vector3((float)gf.X, (float)gf.Y, (float)gf.Z), new Vector3((float)gu.X, (float)gu.Y, (float)gu.Z)));
+                StopShip();
+                Keen.Game2.Simulation.GameSystems.AdminTools.EntityAdmin.TeleportEntity(ownGrid, target);
+                PluginLog.Info($"Teleport: ship to {seatPosition}");
+                return true;
+            }
+            catch (Exception ex) { PluginLog.Error("Teleport failed", ex); return false; }
+        }
+
+        /// <summary>Asks the game to stop the ship you're flying (its velocity to zero).</summary>
+        public void StopShip()
+        {
+            try
+            {
+                if (ownGrid == null) return;
+                var session = CurrentSession();
+                var server = session == null ? null : GameEntityExtensions.TryGet<Keen.Game2.Simulation.Replication.IGameServer>(session);
+                if (server == null) { LogOnce("Stop ship: no game server"); return; }
+                server.StopEntityMovement(ownGrid);
+            }
+            catch (Exception ex) { LogOnce("Stop ship failed: " + ex.Message); }
+        }
+
+        private static Vec3D V(Vector3 v) => new Vec3D(v.X, v.Y, v.Z);
+
+        public bool TryGetSeatPose(out Vec3D position, out Vec3D forward, out Vec3D up)
+        {
+            position = forward = up = Vec3D.Zero;
+            try
+            {
+                if (ownGrid == null || !ownGrid.Data.Has<WorldTransform>()) return false;
+                Entity seat = controller?.GetTopControllable()?.Entity?.TryGet<SeatComponent>(default)?.Entity;
+                WorldTransform t = seat != null && seat.Data.Has<WorldTransform>() ? EntityTransformFunctions.GetWorldTransform(seat.Data) : EntityTransformFunctions.GetWorldTransform(ownGrid.Data);
+                position = ToVec(t.Position);
+                forward = V(t.Orientation.GetForward());
+                up = V(t.Orientation.GetUp());
+                return true;
+            }
+            catch (Exception ex) { LogOnce("Seat pose failed: " + ex.Message); return false; }
         }
 
         public bool TryGetShipAxes(out Vec3D x, out Vec3D y, out Vec3D z)

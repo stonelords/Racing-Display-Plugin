@@ -28,6 +28,8 @@ namespace RaceDisplay.Core
         public bool ShowMarkers { get; set; } = true;
         /// <summary>Only the next few checkpoints (MarkersAhead) have markers, not the whole course.</summary>
         public bool LimitMarkers { get; set; }
+        /// <summary>Timer in the top corner (opposite the minimap), with best lap, best race and splits under it.</summary>
+        public bool TimerInCorner { get; set; }
         public int MarkersAhead { get; set; } = 3;
         /// <summary>Marker size as a share of the distance to it (keeps it the same size on screen). 0.03 = 3%.</summary>
         public double MarkerSize { get; set; } = 0.03;
@@ -47,6 +49,9 @@ namespace RaceDisplay.Core
         public double CrashPenaltySeconds { get; set; } = 5.0;
         /// <summary>After a crash penalty, no other crash penalty for this many seconds (bouncing off a wall, etc).</summary>
         public double CrashImmunitySeconds { get; set; } = 5.0;
+        /// <summary>After a crash penalty, no other crash penalty until you're back above CrashRearmSpeed.</summary>
+        public bool CrashImmuneUntilSpeed { get; set; }
+        public double CrashRearmSpeed { get; set; } = 25.0;
         /// <summary>Only crashes at or above this speed (m/s) count.</summary>
         public double CrashMinSpeed { get; set; } = 20.0;
         /// <summary>How hard the stop must be (m/s²). Lower = more sensitive. 20 is about 2 g.</summary>
@@ -85,6 +90,12 @@ namespace RaceDisplay.Core
 
         /// <summary>How long the results panel stays up after the finish before fading out (seconds).</summary>
         public double ResultsSeconds { get; set; } = 0.0; // 0 = stay until the next race
+        /// <summary>Seconds each results graph (speed, time gap) shows before switching. 0 = speed graph only.</summary>
+        public double GraphCycleSeconds { get; set; } = 5.0;
+        /// <summary>Lap list penalties as icons (ring = missed checkpoint, cross = crash) or in words.</summary>
+        public bool PenaltyIcons { get; set; } = true;
+        /// <summary>Reset race (Ctrl+R) also teleports your ship back behind the start gate.</summary>
+        public bool ResetTeleports { get; set; }
 
         /// <summary>Shortcut per action (key = action name). Missing entries use the defaults.</summary>
         public Dictionary<string, KeyBinding> KeyBindings { get; set; } = new Dictionary<string, KeyBinding>();
@@ -149,6 +160,8 @@ namespace RaceDisplay.Core
         public bool ResultsForShip { get; set; }
         /// <summary>Name put on ghost files you export (optional).</summary>
         public string PilotName { get; set; }
+        /// <summary>The settings preset last loaded or saved (Settings tab), just to show it.</summary>
+        public string CurrentPreset { get; set; }
         public bool ShowBestBoxes { get; set; } = true;
         /// <summary>Lap list on the right and splits on the left.</summary>
         public bool SwapSides { get; set; } = false;
@@ -213,6 +226,8 @@ namespace RaceDisplay.Core
             public bool Reversed { get; set; }
             /// <summary>Named parts of the course, shown on the minimap and Race Map.</summary>
             public List<NamedSector> Sectors { get; set; } = new List<NamedSector>();
+            /// <summary>Where the reset race key teleports you to (seat position and facing); null = behind the start gate.</summary>
+            public SavedGate StartSpot { get; set; }
         }
 
         /// <summary>
@@ -229,6 +244,8 @@ namespace RaceDisplay.Core
 
         /// <summary>The current course's named sectors (this world only; kept in the world's save, not here).</summary>
         public List<NamedSector> CourseSectors { get; set; } = new List<NamedSector>();
+        /// <summary>The current course's teleport spot (this world only; kept in the world's save, not here). Null = behind the start gate.</summary>
+        public SavedGate CourseStartSpot { get; set; }
 
         /// <summary>Courses kept in a world's save folder (RaceDisplayCourses.json), so they travel with the world (e.g. on the Workshop).</summary>
         public sealed class WorldCourses
@@ -344,6 +361,7 @@ namespace RaceDisplay.Core
             s.CurrentCourseName = new Dictionary<string, string>();
             s.ReversedWorlds = new HashSet<string>();
             s.CourseSectors = new List<NamedSector>();
+            s.CourseStartSpot = null;
             // Bindings for keys that no longer exist.
             s.KeyBindings ??= new Dictionary<string, KeyBinding>();
             foreach (var name in new List<string>(s.KeyBindings.Keys))
@@ -356,7 +374,7 @@ namespace RaceDisplay.Core
         /// folder (RaceDisplayCourses.json, written when the game saves). They're only held in memory here, never
         /// written to RaceDisplay.json, so a course can't turn up in another world that happens to have the same name.
         /// </summary>
-        private static readonly string[] WorldOnly = { nameof(Gate), nameof(FinishGate), nameof(Checkpoints), nameof(SavedCourses), nameof(CurrentCourseName), nameof(ReversedWorlds), nameof(CourseSectors) };
+        private static readonly string[] WorldOnly = { nameof(Gate), nameof(FinishGate), nameof(Checkpoints), nameof(SavedCourses), nameof(CurrentCourseName), nameof(ReversedWorlds), nameof(CourseSectors), nameof(CourseStartSpot) };
 
         public void Save(string path)
         {

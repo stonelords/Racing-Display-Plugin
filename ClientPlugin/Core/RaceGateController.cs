@@ -114,6 +114,11 @@ namespace RaceDisplay.Core
         private List<GhostFile> ghostFiles;
         private double? shipLapAtStart;
         private List<double[]> shipSpeedAtStart;
+        private List<double?> shipSplitsAtStart;
+        // The course's bests when the race started (the race itself overwrites them as it goes).
+        private double? recordLapAtStart;
+        private List<double[]> recordSpeedAtStart;
+        private List<double?> recordSplitsAtStart, recordSectorsAtStart, recordBestSplitsAtStart;
         private string GhostFolder => Path.Combine(game.ConfigFolder, "Ghosts");
         private Vec3D? replayCam;
         private Vec3D? orbitLastCam, orbitLastDir;
@@ -181,7 +186,7 @@ namespace RaceDisplay.Core
             bool hasPose = game.TryGetControlledPose(out Vec3D pos, out Vec3D fwd, out Vec3D up);
             Vec3D? position = hasPose ? pos : (Vec3D?)null;
             playerPosition = position;
-            playerForward = hasPose ? fwd : (Vec3D?)null;
+            playerForward = hasPose ? (game.TryGetFacing(out Vec3D facing) ? facing : fwd) : (Vec3D?)null;
             if (hasPose) PluginLog.Step(game.ShipName != null ? "pose (in ship)" : "pose");
 
             if (loadedWorld != game.WorldId)
@@ -253,6 +258,7 @@ namespace RaceDisplay.Core
 
             PluginLog.Step("timer");
             Vec3D? velocity = hasPose && game.TryGetShipVelocity(out Vec3D v) ? v : (Vec3D?)null;
+            lastVelocity = velocity;
             // Gates and checkpoints are tested with the middle of the ship, not the grid's pivot (which can be
             // well off to one side, so passes near the edge of a gate were missed).
             Vec3D? detectAt = position;
@@ -260,16 +266,21 @@ namespace RaceDisplay.Core
             // The spectator camera flying through a gate or checkpoint doesn't count: the timer keeps the ship's last
             // position until you're back in control.
             if (game.InSpectator) detectAt = null;
+            // A second stop request just after a teleport, in case the first one ran before the ship moved.
+            if (stopShipAt.HasValue && game.TimeSeconds >= stopShipAt.Value) { stopShipAt = null; game.StopShip(); }
             timer.Update(detectAt, game.TimeSeconds);
             TrackLap(position, velocity);
             UpdateLiveGap(position);
 
             // A crash during the immunity time after the last crash penalty doesn't count.
-            if (crash.Update(velocity, game.TimeSeconds) && game.TimeSeconds - lastCrashPenaltyAt >= settings.CrashImmunitySeconds && timer.AddCrash())
+            // ...nor, with that setting on, before you're back above the crash immunity speed.
+            if (crashSlowLock && velocity.HasValue && velocity.Value.Length > settings.CrashRearmSpeed) crashSlowLock = false;
+            if (crash.Update(velocity, game.TimeSeconds) && game.TimeSeconds - lastCrashPenaltyAt >= settings.CrashImmunitySeconds
+                && !(settings.CrashImmuneUntilSpeed && crashSlowLock) && timer.AddCrash())
             {
                 lastCrashPenaltyAt = game.TimeSeconds;
-                RaceNotify($"CRASH at {GameOptions.Speed(crash.LastImpactSpeed)}!  +{settings.CrashPenaltySeconds:0.#}s penalty"
-                    + (settings.CrashImmunitySeconds > 0 ? $" (no crash penalty for {settings.CrashImmunitySeconds:0.#}s)" : ""), HudColor.Red);
+                crashSlowLock = true;
+                RaceNotify($"CRASH at {GameOptions.Speed(crash.LastImpactSpeed)}!  +{settings.CrashPenaltySeconds:0.#}s penalty", HudColor.Red);
                 FlashTimer(HudColor.Red);
                 Sound(settings.SoundMissed);
                 Sound(settings.SoundMissed, 120);
@@ -305,13 +316,63 @@ namespace RaceDisplay.Core
 
         private string PlacementName => settings.EditAirPlace ? "IN THE AIR" : settings.EditBlockPick ? "PICK BLOCKS" : "ON A GRID";
 
-        private string ToolName => (settings.EditBlockPick && !settings.EditAirPlace && blockFirst != null ? "CORNER 2: " : "") + (
+        private int movingCp = -1;   // edit mode: the checkpoint being moved (its next placement replaces it), or -1
+
+        private string ToolName => movingCp >= 0 ? $"MOVING CP {movingCp + 1}" : (settings.EditBlockPick && !settings.EditAirPlace && blockFirst != null ? "CORNER 2: " : "") + (
             editTool == ToolStartFinish ? "START / FINISH GATE"
             : editTool == ToolStart ? "START GATE"
             : editTool == ToolFinish ? "FINISH GATE"
             : $"CHECKPOINT {timer.Checkpoints.Count + 1}");
 
         private HudColor ToolColour => editTool == ToolCheckpoint ? HudColor.Orange : editTool == ToolFinish ? HudColor.Purple : HudColor.Cyan;
+
+        private double? stopShipAt;
+
+        /// <summary>Makes where your seat is now (and its facing) the reset race teleport spot. Returns what happened.</summary>
+        private string SetStartSpotHere()
+        {
+            if (timer.Gate == null) return "Set up the course first (a start gate)";
+            if (!game.TryGetSeatPose(out Vec3D spPos, out Vec3D spFwd, out Vec3D spUp)) return "Sit in your ship's seat at the spot first";
+            settings.CourseStartSpot = new GateSettings.SavedGate
+            {
+                World = game.WorldId,
+                Center = new[] { spPos.X, spPos.Y, spPos.Z },
+                Forward = new[] { spFwd.X, spFwd.Y, spFwd.Z },
+                Up = new[] { spUp.X, spUp.Y, spUp.Z },
+            };
+            settings.Save(settingsPath);
+            coursesVersion++;
+            return "Start spot set here";
+        }
+
+        /// <summary>Moves the ship to just behind the start gate, facing the first checkpoint, and stops it.</summary>
+        private bool TeleportToStart()
+        {
+            var g = timer.Gate;
+            if (g == null) return false;
+            var spot = settings.CourseStartSpot;
+            if (spot?.Center != null && spot.Forward != null && spot.Up != null && (spot.World == null || spot.World == game.WorldId))
+            {
+                Vec3D V3(double[] a) => new Vec3D(a[0], a[1], a[2]);
+                if (!game.TeleportShip(V3(spot.Center), V3(spot.Forward), V3(spot.Up)))
+                {
+                    Notify("Couldn't teleport (fly a ship to use this)", HudColor.Yellow);
+                    return false;
+                }
+                stopShipAt = game.TimeSeconds + 0.5;
+                return true;
+            }
+            Vec3D dir = g.Forward.Normalized();
+            if (timer.Checkpoints.Count > 0 && Vec3D.Dot(timer.Checkpoints[0].Center - g.Center, dir) < 0) dir = dir * -1;
+            double back = Math.Max(g.HalfDepth + 25, Math.Min(settings.CountdownDistance * 0.6, g.HalfDepth + 60));
+            if (!game.TeleportShip(g.Center - dir * back, dir, g.Up))
+            {
+                Notify("Couldn't teleport (fly a ship to use this)", HudColor.Yellow);
+                return false;
+            }
+            stopShipAt = game.TimeSeconds + 0.5;
+            return true;
+        }
 
         private void SetEditMode(bool on, Vec3D? position)
         {
@@ -320,6 +381,7 @@ namespace RaceDisplay.Core
             game.SetDebugDraw(on); // so the gate and checkpoint boxes show while editing
             preview = null;
             blockFirst = null; blockPreview = null;
+            movingCp = -1;
             lmbWas = rmbWas = true; // ignore a button already held
             if (on)
             {
@@ -379,6 +441,26 @@ namespace RaceDisplay.Core
                     : settings.EditBlockPick
                     ? "Placing: pick blocks. Left click one corner block, then the opposite corner; the box between them becomes the gate or checkpoint (right click clears the first corner)"
                     : "Placing: on a grid. Aim at a ring or gate structure and left click", HudColor.Cyan);
+            }
+            // Move a checkpoint: aim at it and press the key, then left click where it should go (same number).
+            if (canAct && !game.EditWheelOpen && keys.WasPressed(GateKey.MoveCheckpoint) && hasRay)
+            {
+                var cps = WorldCheckpoints();
+                int aimed = -1; double nearest = double.MaxValue;
+                for (int i = 0; i < cps.Count; i++)
+                {
+                    var cp = cps[i].ToGate();
+                    if (!AimedAt(cp, eye, dir)) continue;
+                    double along = Vec3D.Dot(cp.Center - eye, dir);
+                    if (along < nearest) { nearest = along; aimed = i; }
+                }
+                if (aimed < 0) Notify($"Aim at a checkpoint and press {settings.GetBinding(GateKey.MoveCheckpoint)} to move it", HudColor.Yellow);
+                else
+                {
+                    movingCp = aimed;
+                    game.PlaySound(settings.SoundCheckpoint);
+                    Notify($"Moving CP {aimed + 1}: left click its new place (any placement mode); right click cancels", HudColor.Cyan);
+                }
             }
             if (canAct && !game.EditWheelOpen && keys.WasPressed(GateKey.EditLine))
             {
@@ -466,7 +548,18 @@ namespace RaceDisplay.Core
                     gate = GateFromGrid(g);
                     where = $"{(g.IsOpening ? "in the opening of" : "round")} '{g.Name}'";
                 }
-                if (editTool == ToolStartFinish)
+                if (movingCp >= 0)
+                {
+                    var list = WorldCheckpoints();
+                    if (movingCp < list.Count)
+                    {
+                        list[movingCp] = GateSettings.SavedGate.From(gate, game.WorldId);
+                        SaveCheckpoints(list, position);
+                        Notify($"CP {movingCp + 1} moved {where} (still CP {movingCp + 1})", HudColor.Cyan);
+                    }
+                    movingCp = -1;
+                }
+                else if (editTool == ToolStartFinish)
                 {
                     SetGate(gate, position);
                     SetFinishGate(null, position);
@@ -506,6 +599,11 @@ namespace RaceDisplay.Core
                     Notify(already >= 0 ? $"Checkpoint {list.Count} set on the same ring as CP {already + 1}: each pass through it counts as the next one in order" : $"Checkpoint {list.Count} set {where}", HudColor.Cyan);
                 }
                 Sound(settings.SoundCheckpoint);
+            }
+            else if (rClick && movingCp >= 0)
+            {
+                Notify($"Moving CP {movingCp + 1} cancelled", HudColor.Yellow);
+                movingCp = -1;
             }
             else if (rClick && blocks && blockFirst != null)
             {
@@ -882,6 +980,12 @@ namespace RaceDisplay.Core
             if (raceShipName != null && crec?.Ships != null) crec.Ships.TryGetValue(raceShipName, out sr);
             shipLapAtStart = sr?.BestLap;
             shipSpeedAtStart = sr?.BestLapSpeed;
+            shipSplitsAtStart = sr?.BestLapSplits != null ? new List<double?>(sr.BestLapSplits) : null;
+            recordLapAtStart = crec?.BestLap;
+            recordSpeedAtStart = crec?.BestLapSpeed;
+            recordSplitsAtStart = crec?.BestLapSplits != null ? new List<double?>(crec.BestLapSplits) : null;
+            recordSectorsAtStart = crec?.BestSectors != null ? new List<double?>(crec.BestSectors) : null;
+            recordBestSplitsAtStart = crec?.BestSplits != null ? new List<double?>(crec.BestSplits) : null;
         }
 
         /// <summary>The path and ship shape the ghost, racing line and live gap use: a raced-against ghost file, else your best.</summary>
@@ -1018,13 +1122,16 @@ namespace RaceDisplay.Core
         private void HandleControlsMenu()
         {
             var actions = KeyBindings.Actions;
+            bool hadCommand = false;
             while (game.TryTakeMenuCommand(out var c))
             {
+                hadCommand = true;
                 bool validRow = c.Row >= 0 && c.Row < actions.Length;
                 switch (c.Action)
                 {
                     case MenuAction.Opened:
                         capturing = false;
+                        presetFilesCache = null;
                         controlsNote = null;
                         settingsVersion++;
                         recordsVersion++;
@@ -1055,6 +1162,109 @@ namespace RaceDisplay.Core
                         if (settingsDirtySince < 0) settingsDirtySince = Environment.TickCount64;
                         break;
                     }
+                    case MenuAction.SavePreset:
+                    {
+                        string name = (c.Text ?? "").Trim();
+                        if (name.Length == 0) { controlsNote = "Type a name for the preset first (e.g. Testing or Race day)"; break; }
+                        var presets = LoadPresets();
+                        var values = new Dictionary<string, double>();
+                        foreach (var def in SettingDefs.All) values[def.Name] = def.Get(settings);
+                        bool replaced = presets.Remove(presets.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) ?? "");
+                        presets[name] = values;
+                        SavePresets(presets);
+                        settings.CurrentPreset = name;
+                        settings.Save(settingsPath);
+                        settingsVersion++;
+                        controlsNote = replaced ? $"Preset '{name}' updated with the current settings" : $"Preset '{name}' saved";
+                        break;
+                    }
+                    case MenuAction.LoadPreset:
+                    {
+                        var presets = LoadPresets();
+                        if (c.Text == null || !presets.TryGetValue(c.Text, out var values)) { controlsNote = "Pick a preset to load"; break; }
+                        // Settings not in the preset (added after it was saved) keep their current value.
+                        foreach (var def in SettingDefs.All)
+                            if (values.TryGetValue(def.Name, out double v)) def.Set(settings, def.Clean(v));
+                        settings.CurrentPreset = c.Text;
+                        ApplySettings();
+                        settings.Save(settingsPath);
+                        settingsDirtySince = -1;
+                        settingsVersion++;
+                        controlsNote = $"Preset '{c.Text}' loaded";
+                        break;
+                    }
+                    case MenuAction.DeletePreset:
+                    {
+                        var presets = LoadPresets();
+                        if (c.Text == null || !presets.Remove(c.Text)) break;
+                        SavePresets(presets);
+                        if (settings.CurrentPreset == c.Text) { settings.CurrentPreset = null; settings.Save(settingsPath); }
+                        settingsVersion++;
+                        controlsNote = $"Preset '{c.Text}' deleted";
+                        break;
+                    }
+                    case MenuAction.ExportPreset:
+                    {
+                        var presets = LoadPresets();
+                        if (c.Text == null || !presets.TryGetValue(c.Text, out var values)) { controlsNote = "Pick a preset to export"; break; }
+                        try
+                        {
+                            Directory.CreateDirectory(PresetFolder);
+                            string file = Path.Combine(PresetFolder, SafeFileName(c.Text) + PresetExtension);
+                            File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new PresetFile { Name = c.Text, Values = values },
+                                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                            settingsVersion++;
+                            presetFilesCache = null;
+                            controlsNote = $"Preset '{c.Text}' exported to {file}";
+                        }
+                        catch (Exception e) { controlsNote = "Couldn't export the preset: " + e.Message; }
+                        break;
+                    }
+                    case MenuAction.ImportPreset:
+                    {
+                        var file = c.Text != null && InFolder(c.Text, PresetFolder) ? ReadPresetFile(c.Text) : null;
+                        if (file == null) { controlsNote = "Couldn't read that preset file"; break; }
+                        var presets = LoadPresets();
+                        string name = file.Name;
+                        bool replaced = presets.Remove(presets.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) ?? "");
+                        presets[name] = file.Values;
+                        SavePresets(presets);
+                        settingsVersion++;
+                        controlsNote = (replaced ? $"Preset '{name}' replaced" : $"Preset '{name}' imported") + ": pick it and press Load to use it";
+                        break;
+                    }
+                    case MenuAction.OpenPresetFolder:
+                        try
+                        {
+                            Directory.CreateDirectory(PresetFolder);
+                            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = PresetFolder, UseShellExecute = true });
+                        }
+                        catch (Exception e) { controlsNote = "Couldn't open the folder: " + e.Message; }
+                        settingsVersion++;   // shows files copied in meanwhile when the menu refreshes
+                        presetFilesCache = null;
+                        break;
+                    case MenuAction.RenameCourse:
+                    {
+                        var parts = (c.Text ?? "").Split('\n');
+                        string from = parts[0], to = parts.Length > 1 ? parts[1].Trim() : "";
+                        if (to.Length == 0) { controlsNote = "Type the new name in the Save as box first, then press Rename"; break; }
+                        string world = game.WorldId;
+                        var course = settings.SavedCourses.FirstOrDefault(x => x.World == world && x.Name == from);
+                        if (course == null) break;
+                        if (settings.SavedCourses.Any(x => x.World == world && !ReferenceEquals(x, course) && string.Equals(x.Name, to, StringComparison.OrdinalIgnoreCase)))
+                        { controlsNote = $"There's already a course called '{to}'"; break; }
+                        course.Name = to;
+                        if (settings.CurrentCourseName.TryGetValue(world, out var cur) && cur == from) settings.CurrentCourseName[world] = to;
+                        settings.Save(settingsPath);
+                        coursesVersion++;
+                        controlsNote = $"'{from}' renamed to '{to}' (saved with the world next time it's saved)";
+                        break;
+                    }
+                    case MenuAction.ClearCourse:
+                        ApplyCourse(new GateSettings.SavedCourse());
+                        SaveCoursesToWorld(true);   // so a course found in a Workshop download doesn't come back
+                        controlsNote = "Course cleared: this world has no gates or checkpoints now (saved courses are still in the list)";
+                        break;
                     case MenuAction.ResetSettings:
                     {
                         var defaults = new GateSettings();
@@ -1144,7 +1354,7 @@ namespace RaceDisplay.Core
                     case MenuAction.DeleteGhostFile:
                         try
                         {
-                            if (c.Text != null && c.Text.EndsWith(GhostFile.Extension) && File.Exists(c.Text)) File.Delete(c.Text);
+                            if (c.Text != null && c.Text.EndsWith(GhostFile.Extension) && InFolder(c.Text, GhostFolder) && File.Exists(c.Text)) File.Delete(c.Text);
                             if (raceGhost?.Path == c.Text) raceGhost = null;
                             ghostFiles = null; recordsVersion++;
                             controlsNote = "Ghost file deleted";
@@ -1235,6 +1445,13 @@ namespace RaceDisplay.Core
                             coursesVersion++;
                         }
                         break;
+                    case MenuAction.SetStartSpot: controlsNote = SetStartSpotHere(); break;
+                    case MenuAction.ClearStartSpot:
+                        settings.CourseStartSpot = null;
+                        settings.Save(settingsPath);
+                        coursesVersion++;
+                        controlsNote = "Start spot cleared: reset teleports to just behind the start gate";
+                        break;
                     case MenuAction.LoadCourse: LoadCourse(c.Text); break;
                     case MenuAction.DeleteCourse:
                         settings.SavedCourses.RemoveAll(x => x.World == game.WorldId && x.Name == c.Text);
@@ -1310,14 +1527,26 @@ namespace RaceDisplay.Core
                 }
             }
 
+            // The menu's contents only need rebuilding about 8 times a second (straight away after a click).
+            long nowMs = Environment.TickCount64;
+            if (!hadCommand && !capturing && nowMs - panelBuiltAt < 120) return;
+            panelBuiltAt = nowMs;
             game.ShowControlsMenu(BuildControlsPanel());
         }
+
+        private long panelBuiltAt;
 
         // ---------------------------------------------------------------- courses
 
         private string CurrentCourseName() => settings.CurrentCourseName.TryGetValue(game.WorldId, out var n) ? n : null;
 
         private static GateSettings.SavedGate Copy(GateSettings.SavedGate g, string world) => GateSettings.SavedGate.From(g.ToGate(), world);
+
+        /// <summary>Copy of a start spot (a position and facing, no size), or null if it's incomplete.</summary>
+        private static GateSettings.SavedGate CopySpot(GateSettings.SavedGate g, string world) =>
+            g?.Center?.Length == 3 && g.Forward?.Length == 3 && g.Up?.Length == 3
+                ? new GateSettings.SavedGate { World = world, Center = (double[])g.Center.Clone(), Forward = (double[])g.Forward.Clone(), Up = (double[])g.Up.Clone() }
+                : null;
 
         private void SaveCourse(string name)
         {
@@ -1335,6 +1564,7 @@ namespace RaceDisplay.Core
                 Checkpoints = WorldCheckpoints().Select(x => Copy(x, world)).ToList(),
                 Reversed = CourseReversed,
                 Sectors = settings.CourseSectors.Select(x => new GateSettings.NamedSector { Name = x.Name, From = x.From, To = x.To }).ToList(),
+                StartSpot = settings.CourseStartSpot == null ? null : CopySpot(settings.CourseStartSpot, world),
             });
             settings.CurrentCourseName[world] = name;
             settings.Save(settingsPath);
@@ -1351,6 +1581,7 @@ namespace RaceDisplay.Core
             SetFinishGate(course.Finish?.ToGate(), playerPosition);
             SaveCheckpoints(course.Checkpoints.Select(x => Copy(x, world)).ToList(), playerPosition);
             settings.CourseSectors = (course.Sectors ?? new List<GateSettings.NamedSector>()).Select(x => new GateSettings.NamedSector { Name = x.Name, From = x.From, To = x.To }).ToList();
+            settings.CourseStartSpot = course.StartSpot == null ? null : CopySpot(course.StartSpot, world);
             settings.CurrentCourseName[world] = name;
             settings.Save(settingsPath);
             controlsNote = $"Course '{name}' loaded. Fly through the gate to race.";
@@ -1481,6 +1712,17 @@ namespace RaceDisplay.Core
                     + (rec.BestLap.HasValue ? $"   -   best lap {LapTimer.Format(rec.BestLap.Value)}" : "")
                     + (possible.HasValue ? $"   -   possible lap {LapTimer.Format(possible.Value)}" : "")
                     + (possible.HasValue && timer.LapTarget > 0 ? $"   -   possible {timer.LapTarget}-lap race {LapTimer.Format(possible.Value * timer.LapTarget)}" : "");
+                string courseName = CurrentCourseName() ?? game.WorldId;
+                string RaceText(GateSettings.RaceEntry h) =>
+                    $"{courseName}: {h.Laps} lap{(h.Laps == 1 ? "" : "s")} in {LapTimer.Format(h.Total)}"
+                    + (h.Penalty > 0 ? $" (+{h.Penalty:0.#}s penalties: {h.Missed} missed, {h.Crashes} crash{(h.Crashes == 1 ? "" : "es")})" : " (clean)")
+                    + $", best lap {LapTimer.Format(h.BestLap)}"
+                    + (h.TopSpeed > 0 ? $", top speed {GameOptions.Speed(h.TopSpeed)}" : "")
+                    + (string.IsNullOrEmpty(h.Ship) ? "" : $", {h.Ship}")
+                    + (string.IsNullOrEmpty(settings.PilotName) ? "" : $", {settings.PilotName}")
+                    + $" ({h.Date:d MMM yyyy HH:mm})";
+                var latest = rec.History.OrderByDescending(x => x.Date).FirstOrDefault();
+                if (latest != null) p.LastRaceCopy = RaceText(latest);
                 foreach (var g in rec.History.GroupBy(x => x.Laps).OrderBy(x => x.Key))
                 {
                     int rank = 0;
@@ -1498,6 +1740,7 @@ namespace RaceDisplay.Core
                             TopSpeed = h.TopSpeed > 0 ? GameOptions.Speed(h.TopSpeed) : "",
                             Ship = h.Ship ?? "",
                             IsRecord = rank == 1,
+                            CopyText = RaceText(h),
                         });
                     }
                 }
@@ -1583,6 +1826,9 @@ namespace RaceDisplay.Core
             var routeNow = CourseRoute();
             for (int i = 0; i < routeNow.Count; i++)
                 p.RoutePoints.Add(i == routeNow.Count - 1 && i > 0 && timer.FinishGate == null ? "Start/Finish (lap end)" : routeNow[i].Name);
+            var spot = settings.CourseStartSpot;
+            p.StartSpot = spot?.Center == null || timer.Gate == null ? "Just behind the start gate"
+                : $"Your spot, {Distance((new Vec3D(spot.Center[0], spot.Center[1], spot.Center[2]) - timer.Gate.Center).Length)} from the start gate";
             foreach (var sec in settings.CourseSectors)
             {
                 string Pt(int k) => k >= 0 && k < p.RoutePoints.Count ? p.RoutePoints[k] : $"#{k}";
@@ -1592,16 +1838,128 @@ namespace RaceDisplay.Core
                 p.SavedCourses.Add((sc.Name, $"{sc.Checkpoints.Count} checkpoint{(sc.Checkpoints.Count == 1 ? "" : "s")}", sc.Name == p.CourseName));
 
             p.SettingsVersion = settingsVersion;
+            p.Presets.AddRange(LoadPresets().Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+            p.CurrentPreset = settings.CurrentPreset;
+            p.PresetFolder = PresetFolder;
+            // The preset folder is looked at every few seconds, not every time the menu updates.
+            if (presetFilesCache == null || Environment.TickCount64 - presetFilesAt > 3000)
+            {
+                presetFilesAt = Environment.TickCount64;
+                presetFilesCache = new List<(string, string)>();
+                try
+                {
+                    if (Directory.Exists(PresetFolder))
+                        foreach (var f in Directory.GetFiles(PresetFolder, "*" + PresetExtension).OrderBy(x => x))
+                        {
+                            var pf = ReadPresetFile(f);
+                            if (pf != null) presetFilesCache.Add((pf.Name, f));
+                        }
+                }
+                catch (Exception e) { PluginLog.Error("Couldn't list the preset files", e); }
+            }
+            p.PresetFiles.AddRange(presetFilesCache);
+            var defaults = new GateSettings();
             for (int i = 0; i < SettingDefs.All.Length; i++)
             {
                 var d = SettingDefs.All[i];
+                bool enabled = true;
+                if (d.DependsOn != null)
+                {
+                    var dep = SettingDefs.All.FirstOrDefault(x => x.Name == d.DependsOn);
+                    if (dep != null) enabled = (dep.Get(settings) >= 0.5) != d.DependsOnOff;
+                }
+                double value = d.Clean(d.Get(settings));
                 p.Settings.Add(new HudModel.SettingRow
                 {
                     Index = i, Section = d.Section, Name = d.Name, Description = d.Description, Format = d.Format, Choices = d.Choices,
-                    Toggle = d.Toggle, Min = d.Min, Max = d.Max, Step = d.Step, Value = d.Clean(d.Get(settings)),
+                    Toggle = d.Toggle, Min = d.Min, Max = d.Max, Step = d.Step, Value = value,
+                    Enabled = enabled, DependsOn = d.DependsOn, DependsOnOff = d.DependsOnOff,
+                    Default = d.Clean(d.Get(defaults)),
+                    Changed = Math.Abs(value - d.Clean(d.Get(defaults))) > 1e-6,
                 });
             }
             return p;
+        }
+
+        // ---------------------------------------------------------------- settings presets
+
+        /// <summary>Presets file: preset name -> (setting name -> value), next to RaceDisplay.json.</summary>
+        private string PresetsPath => Path.Combine(Path.GetDirectoryName(settingsPath) ?? "", "RaceDisplayPresets.json");
+
+        private Dictionary<string, Dictionary<string, double>> presetsCache;
+        private List<(string Name, string Path)> presetFilesCache;
+        private long presetFilesAt;
+
+        /// <summary>The presets (read from disk once, then kept; saving updates both). Callers may change the copy.</summary>
+        private Dictionary<string, Dictionary<string, double>> LoadPresets()
+        {
+            if (presetsCache == null) presetsCache = ReadPresets();
+            return new Dictionary<string, Dictionary<string, double>>(presetsCache);
+        }
+
+        private Dictionary<string, Dictionary<string, double>> ReadPresets()
+        {
+            try
+            {
+                if (File.Exists(PresetsPath))
+                    return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, double>>>(File.ReadAllText(PresetsPath))
+                        ?? new Dictionary<string, Dictionary<string, double>>();
+            }
+            catch (Exception e) { PluginLog.Error("Couldn't read the settings presets", e); }
+            return new Dictionary<string, Dictionary<string, double>>();
+        }
+
+        /// <summary>Exported presets (one per file, to share): %AppData%\...\RaceDisplay\Presets\name.racepreset.json</summary>
+        private string PresetFolder => Path.Combine(Path.GetDirectoryName(settingsPath) ?? "", "Presets");
+        private const string PresetExtension = ".racepreset.json";
+
+        private sealed class PresetFile
+        {
+            public string Name { get; set; }
+            public Dictionary<string, double> Values { get; set; }
+        }
+
+        private static PresetFile ReadPresetFile(string path)
+        {
+            try
+            {
+                if (path == null || !File.Exists(path)) return null;
+                var f = System.Text.Json.JsonSerializer.Deserialize<PresetFile>(File.ReadAllText(path));
+                if (f?.Values == null || f.Values.Count == 0) return null;
+                if (string.IsNullOrWhiteSpace(f.Name))
+                    f.Name = Path.GetFileName(path).Replace(PresetExtension, "");
+                f.Name = f.Name.Trim();
+                return f;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>The file is inside that folder (so a file action can't reach anywhere else).</summary>
+        private static bool InFolder(string file, string folder)
+        {
+            try
+            {
+                string f = Path.GetFullPath(file), d = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                return f.StartsWith(d, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        private static string SafeFileName(string name)
+        {
+            foreach (char ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
+            return name.Trim();
+        }
+
+        private void SavePresets(Dictionary<string, Dictionary<string, double>> presets)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(PresetsPath) ?? ".");
+                File.WriteAllText(PresetsPath, System.Text.Json.JsonSerializer.Serialize(presets, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                presetsCache = new Dictionary<string, Dictionary<string, double>>(presets);
+            }
+            catch (Exception e) { PluginLog.Error("Couldn't save the settings presets", e); }
         }
 
         private void FlashTimer(HudColor colour)
@@ -1769,6 +2127,7 @@ namespace RaceDisplay.Core
             // Named sectors run the other way too: the same stretch, counted from the other end.
             int lastPoint = CourseRoute().Count - 1;
             foreach (var sec in settings.CourseSectors) { int f = sec.From; sec.From = lastPoint - sec.To; sec.To = lastPoint - f; }
+            settings.CourseStartSpot = null;   // the start is at the other end now
             timer.Reset();
             countdownStart = null;
             Sound(settings.SoundCheckpoint);
@@ -1809,6 +2168,7 @@ namespace RaceDisplay.Core
             settings.CurrentCourseName.Clear();
             settings.ReversedWorlds.Clear();
             settings.CourseSectors.Clear();
+            settings.CourseStartSpot = null;
             timer.SetGate(null, position);
             timer.SetFinishGate(null, position);
             timer.SetCheckpoints(Enumerable.Empty<TimingGate>(), position);
@@ -1891,32 +2251,37 @@ namespace RaceDisplay.Core
             if (worldCoursesChecked || now - worldLoadedAt < 3 || now - worldCoursesTriedAt < 5) return;
             worldCoursesTriedAt = now;
             string folder = game.WorldSaveFolder;
+            bool haveCourse = timer.Gate != null || timer.Checkpoints.Count > 0;   // made one already while we looked
             if (folder == null)
             {
-                // A new world that hasn't been saved yet has no folder (and no courses); stop looking after a while.
-                if (now - worldLoadedAt > 120) worldCoursesChecked = true;
-                return;
+                // A new world that hasn't been saved yet has no folder (and no courses of its own). Started from the
+                // Workshop: its download's course can still be set up now (it goes into the save when the world is
+                // saved). Otherwise stop looking after a while.
+                if (game.WorkshopStartIds == null && now - worldLoadedAt <= 120) return;
+                if (game.WorkshopStartIds == null) { worldCoursesChecked = true; return; }
             }
             worldCoursesChecked = true;
-            bool haveCourse = timer.Gate != null || timer.Checkpoints.Count > 0;   // made one already while we looked
-            var wc = GateSettings.WorldCourses.Load(folder);
+            var wc = folder == null ? null : GateSettings.WorldCourses.Load(folder);
             bool fromWorkshop = false;
             if (wc == null && !haveCourse)
             {
-                wc = FindWorkshopCourse();
+                // No course in this world, and it was just started from a Workshop download: that download's course.
+                wc = FindWorkshopCourse(folder);
                 fromWorkshop = wc != null;
             }
+            game.ClearWorkshopStart();   // only ever for the first world loaded after starting it
             if (wc != null)
             {
                 MergeWorldCourses(wc);
                 if (!haveCourse && wc.Current?.Gate != null)
                 {
                     ApplyCourse(wc.Current);
-                    RaceNotify($"Race course '{wc.Current.Name ?? "course"}' loaded from this world ({timer.Checkpoints.Count} checkpoints)", HudColor.Cyan);
+                    RaceNotify(fromWorkshop
+                        ? $"Race course '{wc.Current.Name ?? "course"}' loaded from this world's Workshop download ({timer.Checkpoints.Count} checkpoints)"
+                        : $"Race course '{wc.Current.Name ?? "course"}' loaded from this world ({timer.Checkpoints.Count} checkpoints)", HudColor.Cyan);
                 }
                 // Came from the Workshop download: keep it in this world's own save from now on.
                 if (fromWorkshop) SaveCoursesToWorld(true);
-                return;
             }
         }
 
@@ -1925,25 +2290,26 @@ namespace RaceDisplay.Core
         /// save), but the download does. Look through the downloads for the course whose gates and checkpoints sit on
         /// this world's grids.
         /// </summary>
-        private GateSettings.WorldCourses FindWorkshopCourse()
+        private GateSettings.WorldCourses FindWorkshopCourse(string worldFolder)
         {
             try
             {
+                // Only for a world just started from the Workshop screen, and only that download: the Workshop item
+                // folder whose id is the one the game started. Any other world never looks at Workshop courses.
+                string[] ids = game.WorkshopStartIds;
+                if (ids == null || ids.Length == 0) return null;
                 var files = WorkshopCourses.FindFiles();
-                if (files.Count == 0) return null;
-                var grids = game.FindNamedGrids(_ => true, false);
-                GateSettings.WorldCourses best = null;
-                double bestFit = 0;
-                string bestFile = null;
                 foreach (var f in files)
                 {
+                    string itemId = WorkshopCourses.ItemId(f);
+                    if (itemId == null || !ids.Any(x => x.IndexOf(itemId, StringComparison.OrdinalIgnoreCase) >= 0)) continue;
                     var wc = GateSettings.WorldCourses.Load(Path.GetDirectoryName(f));
-                    if (wc?.Current == null) continue;
-                    double fit = WorkshopCourses.Fit(wc.Current, grids);
-                    if (fit > bestFit) { bestFit = fit; best = wc; bestFile = f; }
+                    if (wc?.Current == null && (wc?.Courses == null || wc.Courses.Count == 0)) continue;
+                    PluginLog.Info($"Workshop courses: this world was started from Workshop item {itemId}: using {f}");
+                    return wc;
                 }
-                PluginLog.Info($"Workshop courses: {files.Count} file(s) found, best fit {bestFit:P0}{(bestFile != null ? " (" + bestFile + ")" : "")}");
-                return bestFit >= 0.5 ? best : null;
+                PluginLog.Info($"Workshop courses: started from the Workshop ({string.Join(" | ", ids)}), but that download has no race course");
+                return null;
             }
             catch (Exception e) { PluginLog.Error("Workshop courses: search failed", e); return null; }
         }
@@ -1964,6 +2330,7 @@ namespace RaceDisplay.Core
                     Checkpoints = (c.Checkpoints ?? new List<GateSettings.SavedGate>()).Select(x => Copy(x, world)).ToList(),
                     Reversed = c.Reversed,
                     Sectors = c.Sectors ?? new List<GateSettings.NamedSector>(),
+                    StartSpot = c.StartSpot == null ? null : CopySpot(c.StartSpot, world),
                 });
                 added++;
             }
@@ -1979,6 +2346,7 @@ namespace RaceDisplay.Core
             SaveCheckpoints((course.Checkpoints ?? new List<GateSettings.SavedGate>()).Select(x => Copy(x, world)).ToList(), playerPosition);
             SetCourseReversed(course.Reversed);
             settings.CourseSectors = (course.Sectors ?? new List<GateSettings.NamedSector>()).Select(x => new GateSettings.NamedSector { Name = x.Name, From = x.From, To = x.To }).ToList();
+            settings.CourseStartSpot = course.StartSpot == null ? null : CopySpot(course.StartSpot, world);
             if (!string.IsNullOrWhiteSpace(course.Name)) settings.CurrentCourseName[world] = course.Name;
             else settings.CurrentCourseName.Remove(world);
             settings.Save(settingsPath);
@@ -2005,6 +2373,7 @@ namespace RaceDisplay.Core
                     Checkpoints = WorldCheckpoints().Select(x => Copy(x, world)).ToList(),
                     Reversed = CourseReversed,
                     Sectors = settings.CourseSectors.Select(x => new GateSettings.NamedSector { Name = x.Name, From = x.From, To = x.To }).ToList(),
+                    StartSpot = settings.CourseStartSpot == null ? null : CopySpot(settings.CourseStartSpot, world),
                 },
                 Courses = settings.SavedCourses.Where(x => x.World == world).ToList(),
             };
@@ -2068,7 +2437,14 @@ namespace RaceDisplay.Core
                 gapText = null;
                 countdownStart = null;
                 countdownAllowed = true;
-                Notify("Race reset");
+                if (!settings.ResetTeleports) Notify("Race reset");
+                else if (TeleportToStart()) Notify("Race reset: back to the start");
+            }
+            else if (keys.WasPressed(GateKey.SetStartSpot))
+            {
+                string note = SetStartSpotHere();
+                Notify(settings.ResetTeleports || !note.StartsWith("Start spot set") ? note
+                    : note + ". Turn on Settings > Race > Reset race teleports to the start to use it", note.StartsWith("Start spot set") ? HudColor.Cyan : HudColor.Yellow);
             }
             else if (keys.WasPressed(GateKey.ToggleMarkers))
             {
@@ -2175,6 +2551,7 @@ namespace RaceDisplay.Core
 
                 case LapEventKind.RaceStarted:
                     lastCrashPenaltyAt = double.NegativeInfinity;
+                    crashSlowLock = false;
                     PluginLog.StartTrace(30, "race start");   // frame times while the race gets going
                     if (timer.PracticeLapsDone.Count == 0 || currentShip == null) currentShip = game.GetShipShape(250);
                     ResetRaceStats();
@@ -2313,7 +2690,7 @@ namespace RaceDisplay.Core
                     shipResults = null;
                     results = BuildResults(seconds);
                     resultsUntil = game.TimeSeconds + settings.ResultsSeconds;
-                    if (results.Headline != null && results.Headline.StartsWith("NEW RECORD"))
+                    if (results.Headline != null && results.Headline.StartsWith("NEW COURSE RECORD"))
                         for (int k = 0; k < 4; k++) Sound(settings.SoundBest, 300 + k * 110);
                     countdownAllowed = false; // leave the gate area before a countdown can start again
                     break;
@@ -2328,27 +2705,16 @@ namespace RaceDisplay.Core
             if (shipBestBefore.HasValue)
             {
                 double d = total - shipBestBefore.Value;
-                list.Add(("VS SHIP BEST", d < 0 ? $"-{-d:0.000}s best" : $"+{d:0.000}s", d < 0 ? HudColor.Purple : HudColor.Yellow));
+                list.Add(("VS SHIP BEST RACE", FasterSlower(d), d < 0 ? HudColor.Purple : HudColor.Yellow));
             }
-            else if (!string.IsNullOrEmpty(raceShipName)) list.Add(("VS SHIP BEST", "first race", HudColor.Grey));
+            else if (!string.IsNullOrEmpty(raceShipName)) list.Add(("VS SHIP BEST RACE", "first race in this ship", HudColor.Grey));
 
             if (lapStats.Count > 0)
             {
-                double dist = 0, turnSum = 0, maxTurn = 0, maxG = 0, maxBrake = 0;
-                int maxTurnLap = 1;
-                for (int l = 0; l < lapStats.Count; l++)
-                {
-                    var st = lapStats[l];
-                    dist += st.Distance;
-                    turnSum += st.AvgTurnG;
-                    if (st.MaxTurnG > maxTurn) { maxTurn = st.MaxTurnG; maxTurnLap = l + 1; }
-                    maxG = Math.Max(maxG, st.MaxG);
-                    maxBrake = Math.Max(maxBrake, st.MaxBrakeG);
-                }
+                double dist = 0, maxG = 0;
+                foreach (var st in lapStats) { dist += st.Distance; maxG = Math.Max(maxG, st.MaxG); }
+                // (Turn G and braking per lap are in the sectors table, so only race-wide figures here.)
                 list.Add(("DISTANCE", Distance(dist), HudColor.White));
-                list.Add(("MAX TURN G", $"{maxTurn:0.0} g  L{maxTurnLap}", HudColor.White));
-                list.Add(("AVG TURN G", $"{turnSum / lapStats.Count:0.0} g", HudColor.White));
-                list.Add(("MAX BRAKING", $"{maxBrake:0.0} g", HudColor.White));
                 list.Add(("MAX G", $"{maxG:0.0} g", HudColor.White));
             }
             if (raceSpeedSamples.Count > 4 && raceTopSpeed > 1)
@@ -2368,9 +2734,10 @@ namespace RaceDisplay.Core
             return list;
         }
 
-        private static void AddGraphLine(HudModel.ResultsPanel panel, string label, HudColor colour, List<double[]> trace)
+        private static void AddGraphLine(HudModel.ResultsPanel panel, string label, HudColor colour, List<double[]> trace, double? time = null)
         {
             if (trace == null || trace.Count < 2) return;
+            if (time.HasValue) label += "  " + LapTimer.Format(time.Value);
             var line = new HudModel.GraphLine { Label = label, Colour = colour };
             foreach (var p in trace)
             {
@@ -2380,6 +2747,94 @@ namespace RaceDisplay.Core
             panel.Graph.Add(line);
             foreach (var p in trace) panel.GraphMaxSpeed = Math.Max(panel.GraphMaxSpeed, p[1]);
         }
+
+
+        /// <summary>
+        /// Lap time at each share of the lap (0..1), from a speed trace: the time between two known points (the
+        /// start, each checkpoint with a split, the finish) is shared out by how slow the ship was over each bit.
+        /// </summary>
+        private static Func<double, double> LapClock(List<double[]> trace, double lapTime, IList<double?> splits)
+        {
+            // Cumulative "slowness" (sum of 1 / speed) along the lap.
+            var xs = new List<double> { 0 }; var cum = new List<double> { 0 };
+            var anchors = new List<(double X, double T)> { (0, 0) };
+            double c = 0, lastX = 0;
+            foreach (var p in trace)
+            {
+                double x = Math.Max(lastX, Math.Min(1, p[0]));
+                c += (x - lastX) / Math.Max(5, p[1]);
+                xs.Add(x); cum.Add(c); lastX = x;
+                if (p.Length >= 3 && splits != null)
+                {
+                    int i = (int)p[2] - 1;
+                    if (i >= 0 && i < splits.Count && splits[i].HasValue && splits[i].Value > anchors[anchors.Count - 1].T && splits[i].Value < lapTime)
+                        anchors.Add((x, splits[i].Value));
+                }
+            }
+            c += (1 - lastX) / Math.Max(5, trace[trace.Count - 1][1]);
+            xs.Add(1); cum.Add(c);
+            anchors.Add((1, lapTime));
+            double Cum(double x)
+            {
+                int k = xs.BinarySearch(x);
+                if (k >= 0) return cum[k];
+                k = ~k;
+                if (k <= 0) return 0;
+                if (k >= xs.Count) return cum[cum.Count - 1];
+                double span = xs[k] - xs[k - 1];
+                return span > 1e-9 ? cum[k - 1] + (cum[k] - cum[k - 1]) * (x - xs[k - 1]) / span : cum[k];
+            }
+            return x =>
+            {
+                int a = 0;
+                while (a < anchors.Count - 2 && anchors[a + 1].X <= x) a++;
+                var (x0, t0) = anchors[a]; var (x1, t1) = anchors[a + 1];
+                double c0 = Cum(x0), c1 = Cum(x1);
+                double u = c1 - c0 > 1e-12 ? (Cum(x) - c0) / (c1 - c0) : (x1 - x0 > 1e-9 ? (x - x0) / (x1 - x0) : 1);
+                return t0 + (t1 - t0) * Math.Max(0, Math.Min(1, u));
+            };
+        }
+
+        /// <summary>Time gap graph: how far ahead (negative) or behind (positive) lap A was of lap B round the lap.</summary>
+        private static void AddGapGraph(HudModel.ResultsPanel panel, string against,
+            List<double[]> a, double aTime, IList<double?> aSplits, List<double[]> b, double bTime, IList<double?> bSplits)
+        {
+            if (a == null || b == null || a.Count < 2 || b.Count < 2 || aTime <= 0 || bTime <= 0) return;
+            var ca = LapClock(a, aTime, aSplits);
+            var cb = LapClock(b, bTime, bSplits);
+            const int n = 150;
+            for (int i = 0; i <= n; i++)
+            {
+                double x = (double)i / n;
+                panel.Gap.Add((x, ca(x) - cb(x)));
+            }
+            panel.GapAgainst = against;
+        }
+
+        /// <summary>Missed checkpoints by name: "CP 3, 4" (one lap) or "L1 CP 3, 4 · L2 CP 8".</summary>
+        private string MissedNames()
+        {
+            var parts = new List<string>();
+            int laps = timer.Laps.Count, n = timer.Checkpoints.Count;
+            for (int l = 0; l < laps; l++)
+            {
+                var sp = timer.Laps[l].Splits;
+                var miss = new List<string>();
+                for (int i = 0; i < n; i++) if (i >= sp.Length || !sp[i].HasValue) miss.Add((i + 1).ToString());
+                if (miss.Count > 0) parts.Add((laps > 1 ? $"L{l + 1} " : "") + "CP " + string.Join(", ", miss));
+            }
+            return string.Join(" · ", parts);
+        }
+
+        /// <summary>Checkpoints missed on one lap (1 = CP 1), for the red lines on the graph.</summary>
+        private void MarkMissed(HudModel.ResultsPanel panel, int lap)
+        {
+            var sp = timer.Laps[lap].Splits;
+            for (int i = 0; i < timer.Checkpoints.Count; i++) if (i >= sp.Length || !sp[i].HasValue) panel.MissedCheckpoints.Add(i + 1);
+        }
+
+        /// <summary>"7.381s faster" / "3.204s slower".</summary>
+        private static string FasterSlower(double d) => d < 0 ? $"{-d:0.000}s faster" : $"{d:0.000}s slower";
 
         /// <summary>
         /// Best ever time at each checkpoint, and best ever time for each sector (start to CP 1, CP 1 to CP 2, ...,
@@ -2431,6 +2886,8 @@ namespace RaceDisplay.Core
         private HudModel.ResultsPanel ShownResults()
         {
             var shown = settings.ResultsForShip && shipResults != null ? shipResults : results;
+            double cycle = settings.GraphCycleSeconds;
+            if (shown != null) shown.GraphPage = cycle > 0 && shown.Gap.Count > 1 && ((long)Math.Floor(game.TimeSeconds / cycle)) % 2 == 1 ? 1 : 0;
             if (shown != null && shipResults != null)
                 shown.Footer = $"{settings.GetBinding(GateKey.ResultsMode)}: {(shown == shipResults ? "course best" : "this ship's best")}";
             return shown;
@@ -2500,6 +2957,7 @@ namespace RaceDisplay.Core
         }
 
         private Vec3D? playerForward;
+        private Vec3D? lastVelocity;   // the ship's velocity this frame (minimap arrow)
         private void ToggleResultsMode()
         {
             settings.ResultsForShip = !settings.ResultsForShip;
@@ -2527,44 +2985,56 @@ namespace RaceDisplay.Core
             }
             else if (total < raceBefore.Value)
             {
-                panel.Headline = $"SHIP BEST!  {LapTimer.FormatDelta(total - raceBefore.Value)}";
+                panel.Headline = $"NEW SHIP BEST RACE: {FasterSlower(total - raceBefore.Value)}";
                 panel.HeadlineColour = HudColor.Yellow;
             }
             else
             {
-                panel.Headline = $"{LapTimer.FormatDelta(total - raceBefore.Value)} vs ship best";
+                panel.Headline = $"{FasterSlower(total - raceBefore.Value)} than this ship's best race";
                 panel.HeadlineColour = HudColor.Grey;
             }
 
-            panel.Lines.Add(("TOTAL", LapTimer.Format(total), HudColor.White));
+            // Same race time, penalty-free time, speeds and penalties as the course results.
+            foreach (var line in overall.Lines)
+                if (line.Label == "THIS RACE" || line.Label == "WITHOUT PENALTIES") panel.Lines.Add(line);
+            if (raceBefore.HasValue && total >= raceBefore.Value)
+                panel.Lines.Add(("SHIP BEST RACE", LapTimer.Format(raceBefore.Value), HudColor.Yellow));
             if (timer.RaceBestLap.HasValue)
             {
                 bool shipBest = !lapBefore.HasValue || timer.RaceBestLap.Value < lapBefore.Value;
-                panel.Lines.Add(("BEST LAP", LapTimer.Format(timer.RaceBestLap.Value), shipBest ? HudColor.Purple : HudColor.Green));
+                panel.Lines.Add(("BEST LAP THIS RACE", LapTimer.Format(timer.RaceBestLap.Value), shipBest ? HudColor.Purple : HudColor.Green));
             }
             if (lapBefore.HasValue)
                 panel.Lines.Add(("SHIP BEST LAP", LapTimer.Format(Math.Min(lapBefore.Value, timer.RaceBestLap ?? double.MaxValue)), HudColor.Yellow));
-            if (raceBefore.HasValue && total >= raceBefore.Value)
-                panel.Lines.Add(("SHIP BEST RACE", LapTimer.Format(raceBefore.Value), HudColor.Yellow));
             double? possible = PossibleLap(ship.BestSectors, timer.Checkpoints.Count);
             if (possible.HasValue)
             {
-                panel.Lines.Add(("POSSIBLE LAP", LapTimer.Format(possible.Value), HudColor.Purple));
+                panel.Lines.Add(("POSSIBLE LAP (BEST SECTORS)", LapTimer.Format(possible.Value), HudColor.Purple));
                 if (laps > 1) panel.Lines.Add(("POSSIBLE RACE", LapTimer.Format(possible.Value * laps), HudColor.Purple));
             }
-            // Speeds and penalties are the same either way.
             foreach (var line in overall.Lines)
                 if (line.Label == "TOP / AVG SPEED" || line.Label == "PENALTIES") panel.Lines.Add(line);
 
-            // Graph: best lap of this race against this ship's best lap before it.
+            // Graphs: best lap of this race against this ship's best lap before it (or the last lap).
             if (laps > 0 && raceSpeedTraces.Count == laps)
             {
                 int bestIdx = 0;
                 for (int l = 1; l < laps; l++) if (timer.Laps[l].Time < timer.Laps[bestIdx].Time) bestIdx = l;
-                bool beat = !lapBefore.HasValue || timer.Laps[bestIdx].Time < lapBefore.Value;
-                AddGraphLine(panel, $"Best this race (L{bestIdx + 1})", beat ? HudColor.Purple : HudColor.Green, raceSpeedTraces[bestIdx]);
-                if (speedBefore != null) AddGraphLine(panel, beat ? "Old ship best" : "Ship best", beat ? HudColor.Grey : HudColor.Purple, speedBefore);
-                else if (bestIdx != laps - 1) AddGraphLine(panel, $"Last lap (L{laps})", HudColor.Grey, raceSpeedTraces[laps - 1]);
+                var best = timer.Laps[bestIdx];
+                bool beat = !lapBefore.HasValue || best.Time < lapBefore.Value;
+                MarkMissed(panel, bestIdx);
+                AddGraphLine(panel, $"This race (L{bestIdx + 1})", beat ? HudColor.Purple : HudColor.Green, raceSpeedTraces[bestIdx], best.Time);
+                if (speedBefore != null && lapBefore.HasValue)
+                {
+                    AddGraphLine(panel, beat ? "Old ship best" : "Ship best", beat ? HudColor.Grey : HudColor.Purple, speedBefore, lapBefore);
+                    AddGapGraph(panel, beat ? "old ship best" : "ship best", raceSpeedTraces[bestIdx], best.Flown, best.Splits, speedBefore, lapBefore.Value, shipSplitsAtStart);
+                }
+                else if (bestIdx != laps - 1)
+                {
+                    var last = timer.Laps[laps - 1];
+                    AddGraphLine(panel, $"Last lap (L{laps})", HudColor.Grey, raceSpeedTraces[laps - 1], last.Time);
+                    AddGapGraph(panel, $"last lap (L{laps})", raceSpeedTraces[bestIdx], best.Flown, best.Splits, raceSpeedTraces[laps - 1], last.Flown, last.Splits);
+                }
             }
             return panel;
         }
@@ -2579,16 +3049,20 @@ namespace RaceDisplay.Core
             double penalty = 0;
             foreach (var l in timer.Laps) { missed += l.MissedCheckpoints; crashes += l.Crashes; penalty += l.Penalty; }
 
-            panel.Lines.Add(("TOTAL", LapTimer.Format(total), HudColor.White));
+            panel.Lines.Add(("THIS RACE", LapTimer.Format(total), HudColor.White));
+            if (penalty > 0) panel.Lines.Add(("WITHOUT PENALTIES", $"{LapTimer.Format(total - penalty)}  (+{penalty:0.#}s added)", HudColor.Grey));
+            int recordLine = panel.Lines.Count;   // the course record race goes here when it wasn't beaten
             if (timer.RaceBestLap.HasValue)
             {
                 bool record = rec.BestLap.HasValue && Math.Abs(timer.RaceBestLap.Value - rec.BestLap.Value) < 1e-6;
-                panel.Lines.Add(("BEST LAP", LapTimer.Format(timer.RaceBestLap.Value), record ? HudColor.Purple : HudColor.Green));
+                panel.Lines.Add(("BEST LAP THIS RACE", LapTimer.Format(timer.RaceBestLap.Value), record ? HudColor.Purple : HudColor.Green));
             }
+            if (rec.BestLap.HasValue && timer.RaceBestLap.HasValue && rec.BestLap.Value < timer.RaceBestLap.Value - 1e-6)
+                panel.Lines.Add(("COURSE RECORD LAP", LapTimer.Format(rec.BestLap.Value), HudColor.Yellow));
             double? possible = PossibleLap(rec, timer.Checkpoints.Count);
             if (possible.HasValue)
             {
-                panel.Lines.Add(("POSSIBLE LAP", LapTimer.Format(possible.Value), HudColor.Purple));
+                panel.Lines.Add(("POSSIBLE LAP (BEST SECTORS)", LapTimer.Format(possible.Value), HudColor.Purple));
                 if (laps > 1) panel.Lines.Add(("POSSIBLE RACE", LapTimer.Format(possible.Value * laps), HudColor.Purple));
             }
             if (lapSpeeds.Count > 0)
@@ -2601,7 +3075,7 @@ namespace RaceDisplay.Core
             if (penalty > 0)
             {
                 var parts = new List<string>();
-                if (missed > 0) parts.Add($"{missed} missed");
+                if (missed > 0) parts.Add($"{missed} missed: {MissedNames()}");
                 if (crashes > 0) parts.Add($"{crashes} crash{(crashes == 1 ? "" : "es")}");
                 panel.Lines.Add(("PENALTIES", $"+{penalty:0.#}s  ({string.Join(", ", parts)})", HudColor.Red));
             }
@@ -2611,21 +3085,21 @@ namespace RaceDisplay.Core
             {
                 if (total < bestRace)
                 {
-                    panel.Headline = $"NEW RECORD!  {LapTimer.FormatDelta(total - bestRace)}";
+                    panel.Headline = $"NEW COURSE RECORD: {FasterSlower(total - bestRace)}";
                     panel.HeadlineColour = HudColor.Yellow;
                     rec.BestRace[laps] = total;
                     FlashTimer(HudColor.Green);
                 }
                 else
                 {
-                    panel.Headline = $"{LapTimer.FormatDelta(total - bestRace)} vs record";
+                    panel.Headline = $"{FasterSlower(total - bestRace)} than the course record";
                     panel.HeadlineColour = HudColor.Grey;
-                    panel.Lines.Add(("RECORD", LapTimer.Format(bestRace), HudColor.Yellow));
+                    panel.Lines.Insert(recordLine, ("COURSE RECORD RACE", LapTimer.Format(bestRace), HudColor.Yellow));
                 }
             }
             else
             {
-                panel.Headline = "NEW RECORD!";
+                panel.Headline = "NEW COURSE RECORD (first race of this length)";
                 panel.HeadlineColour = HudColor.Yellow;
                 rec.BestRace[laps] = total;
             }
@@ -2635,10 +3109,22 @@ namespace RaceDisplay.Core
             {
                 int bestIdx = 0;
                 for (int l = 1; l < laps; l++) if (timer.Laps[l].Time < timer.Laps[bestIdx].Time) bestIdx = l;
-                bool raceBestIsRecord = rec.BestLap.HasValue && Math.Abs(timer.Laps[bestIdx].Time - rec.BestLap.Value) < 1e-6;
-                AddGraphLine(panel, $"Best this race (L{bestIdx + 1})", raceBestIsRecord ? HudColor.Purple : HudColor.Green, raceSpeedTraces[bestIdx]);
-                if (!raceBestIsRecord && rec.BestLapSpeed != null) AddGraphLine(panel, "Course record", HudColor.Purple, rec.BestLapSpeed);
-                if (bestIdx != laps - 1) AddGraphLine(panel, $"Last lap (L{laps})", HudColor.Grey, raceSpeedTraces[laps - 1]);
+                var best = timer.Laps[bestIdx];
+                bool beat = !recordLapAtStart.HasValue || best.Time < recordLapAtStart.Value - 1e-6;
+                MarkMissed(panel, bestIdx);
+                AddGraphLine(panel, $"This race (L{bestIdx + 1})", beat ? HudColor.Purple : HudColor.Green, raceSpeedTraces[bestIdx], best.Time);
+                if (recordSpeedAtStart != null && recordLapAtStart.HasValue)
+                {
+                    // The record as it was before this race (so beating it still shows what you beat).
+                    AddGraphLine(panel, beat ? "Old course record" : "Course record", beat ? HudColor.Grey : HudColor.Purple, recordSpeedAtStart, recordLapAtStart);
+                    AddGapGraph(panel, beat ? "old course record" : "course record", raceSpeedTraces[bestIdx], best.Flown, best.Splits, recordSpeedAtStart, recordLapAtStart.Value, recordSplitsAtStart);
+                }
+                else if (bestIdx != laps - 1)
+                {
+                    var last = timer.Laps[laps - 1];
+                    AddGraphLine(panel, $"Last lap (L{laps})", HudColor.Grey, raceSpeedTraces[laps - 1], last.Time);
+                    AddGapGraph(panel, $"last lap (L{laps})", raceSpeedTraces[bestIdx], best.Flown, best.Splits, raceSpeedTraces[laps - 1], last.Flown, last.Splits);
+                }
             }
 
             // Race history: keep the best 5 per lap count.
@@ -3040,6 +3526,7 @@ namespace RaceDisplay.Core
         // ---- Minimap: the course from above, the start gate's forward pointing up the map.
         private int minimapKey, minimapVersion;
         private double lastCrashPenaltyAt = double.NegativeInfinity;   // for the crash immunity time
+        private bool crashSlowLock;   // a crash penalty was given and you haven't been back above the immunity speed since
         private Vec3D mmOrigin, mmE1, mmE2;          // map axes (right, up the map) on the course's ground plane
         private double mmMinU, mmMinV, mmSpan;
         private HudModel.MinimapPanel mmStatic;      // route / lines in map coordinates, rebuilt when they change
@@ -3169,8 +3656,17 @@ namespace RaceDisplay.Core
             {
                 var p = MapPoint(me.Value);
                 m.PlayerX = p.X; m.PlayerY = p.Y;
-                if (playerForward.HasValue)
-                    m.PlayerAngle = Math.Atan2(Vec3D.Dot(playerForward.Value, mmE1), Vec3D.Dot(playerForward.Value, mmE2)) * 180 / Math.PI;
+                // The arrow points the way you're moving once you're going (that's what matters on the map), else
+                // the way the cockpit faces.
+                Vec3D? heading = playerForward;
+                if (lastVelocity.HasValue)
+                {
+                    Vec3D v = lastVelocity.Value;
+                    double flat = Math.Sqrt(Math.Pow(Vec3D.Dot(v, mmE1), 2) + Math.Pow(Vec3D.Dot(v, mmE2), 2));
+                    if (flat > 5) heading = v;
+                }
+                if (heading.HasValue)
+                    m.PlayerAngle = Math.Atan2(Vec3D.Dot(heading.Value, mmE1), Vec3D.Dot(heading.Value, mmE2)) * 180 / Math.PI;
             }
             // View: zoomed in round you while you're moving, the whole course when you're still; eased between.
             // Fully zoomed in from 20 m/s; below that it zooms out gradually, to the whole course at 4 m/s.
@@ -3517,6 +4013,9 @@ namespace RaceDisplay.Core
                 LapSpeeds = lapSpeeds,
                 LapStats = lapStats,
                 RaceStats = raceStats,
+                SectorsBefore = recordSectorsAtStart,
+                SplitsBefore = recordBestSplitsAtStart,
+                LapBefore = recordLapAtStart,
                 PossibleLap = PossibleLap(record, timer.Checkpoints.Count),
                 Results = settings.ResultsSeconds <= 0 || now < resultsUntil ? ShownResults() : null, // 0 = until the next race
                 Flash = flashColour.HasValue && now < flashUntil ? flashColour : null,

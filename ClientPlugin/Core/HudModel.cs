@@ -75,6 +75,8 @@ namespace RaceDisplay.Core
 
         /// <summary>Lap list (and results) on the right, splits on the left.</summary>
         public bool SwapSides;
+        /// <summary>The timer sits in the top right corner (top left with SwapSides) above the best lap, best race and splits.</summary>
+        public bool TimerInCorner;
         /// <summary>Hide the game's own HUD screens and show only the race HUD.</summary>
         public bool HideGameHud;
 
@@ -176,6 +178,13 @@ namespace RaceDisplay.Core
             /// <summary>Speed graph: lines of (share of the lap 0..1, speed m/s). Empty = no graph.</summary>
             public readonly List<GraphLine> Graph = new List<GraphLine>();
             public double GraphMaxSpeed;
+            /// <summary>Time gap graph: (share of the lap, seconds behind (+) or ahead (-) of <see cref="GapAgainst"/>). Empty = none.</summary>
+            public readonly List<(double X, double Gap)> Gap = new List<(double, double)>();
+            public string GapAgainst;
+            /// <summary>Checkpoints (1 = CP 1) missed on the graphed lap: drawn red.</summary>
+            public readonly List<int> MissedCheckpoints = new List<int>();
+            /// <summary>Which graph is showing: 0 = speed, 1 = time gap (they take turns).</summary>
+            public int GraphPage;
         }
 
         public sealed class GraphLine
@@ -206,11 +215,15 @@ namespace RaceDisplay.Core
             public bool EditMode;
             public string EditModeKey, EditWheelKey;
             public bool WorldHasCourses;
+            /// <summary>Courses tab: where the reset race teleport goes ("Behind the start gate" or a description).</summary>
+            public string StartSpot;
             /// <summary>Records tab: ghost files in the ghosts folder.</summary>
             public readonly List<GhostRow> Ghosts = new List<GhostRow>();
             public string GhostFolder, RacingAgainst, PilotName;
             public bool CourseHasBest;
             public int RecordsVersion;
+            /// <summary>Records tab: the latest race on this course as text to copy (null = none yet).</summary>
+            public string LastRaceCopy;
 
             /// <summary>Courses tab. Rebuilt when CoursesVersion changes.</summary>
             public string CourseName;     // current course name, or null if not saved
@@ -224,6 +237,12 @@ namespace RaceDisplay.Core
 
             /// <summary>Settings tab. The menu only rebuilds it when SettingsVersion changes (not while you drag a slider).</summary>
             public readonly List<SettingRow> Settings = new List<SettingRow>();
+            /// <summary>Settings tab: saved presets (names, sorted) and the one last loaded or saved.</summary>
+            public readonly List<string> Presets = new List<string>();
+            public string CurrentPreset;
+            /// <summary>Preset files in the presets folder (exported here or copied in from someone else).</summary>
+            public readonly List<(string Name, string Path)> PresetFiles = new List<(string, string)>();
+            public string PresetFolder;
             public int SettingsVersion;
         }
 
@@ -245,6 +264,7 @@ namespace RaceDisplay.Core
             public int Rank;
             public string Total, Date, Penalty, BestLap, TopSpeed, Ship;
             public bool IsRecord;     // the best one in its group
+            public string CopyText;   // the race as one line of text, to paste somewhere
         }
 
         public sealed class SettingRow
@@ -254,6 +274,13 @@ namespace RaceDisplay.Core
             public string[] Choices;
             public bool Toggle;
             public double Min, Max, Step, Value;
+            /// <summary>False when the setting it depends on is off (it does nothing then).</summary>
+            public bool Enabled = true;
+            public string DependsOn;
+            public bool DependsOnOff;
+            /// <summary>Not at its default value (Default).</summary>
+            public bool Changed;
+            public double Default;
         }
 
         public sealed class ControlsRow
@@ -313,11 +340,11 @@ namespace RaceDisplay.Core
             }
             if (Results != null)
             {
-                sb.Append("RES:").Append(Results.Title).Append(Results.Subtitle).Append(Results.Footer).Append(Results.Headline).Append(Results.HeadlineColour.R).Append(Results.Graph.Count).Append('|');
+                sb.Append("RES:").Append(Results.Title).Append(Results.Subtitle).Append(Results.Footer).Append(Results.Headline).Append(Results.HeadlineColour.R).Append(Results.Graph.Count).Append(Results.GraphPage).Append('|');
                 foreach (var l in Results.Lines) sb.Append(l.Label).Append(l.Value).Append(l.Colour.G).Append('|');
             }
             sb.Append("CD:").Append(Countdown).Append(CountdownColour.R).Append('|');
-            sb.Append("SW:").Append(SwapSides).Append(HideGameHud).Append('|');
+            sb.Append("SW:").Append(SwapSides).Append(TimerInCorner).Append(HideGameHud).Append('|');
             if (Timer != null) sb.Append(Timer.BestLapNote).Append(Timer.BestRaceNote).Append('|');
             // When the HUD places markers itself each frame, their screen position isn't part of the signature.
             bool pos = !MarkersPlacedByUi;

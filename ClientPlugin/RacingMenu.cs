@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -156,7 +157,9 @@ namespace RaceDisplay
         private ContentControl page;
         private ScrollViewer controlsPage, settingsPage, recordsPage, infoPage, coursesPage;
         private StackPanel courseRows;
-        private TextBox courseNameBox, pilotNameBox, sectorNameBox;
+        private TextBox courseNameBox, pilotNameBox, sectorNameBox, presetNameBox;
+        private StackPanel presetRows;
+        private string pickedPreset;
         private int sectorFrom, sectorTo = 1;
         private int builtCoursesVersion = -1;
         private StackPanel controlRows, settingRows, recordRows;
@@ -580,9 +583,11 @@ namespace RaceDisplay
             // Search box above the settings: type part of a setting's name (or words from its description).
             settingsSearch = new TextBox { Watermark = "Search settings", VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(16 * s, 4 * s, 24 * s, 8 * s) };
             settingsSearch.TextChanged += (_, __) => { if (lastSettingsPanel != null) FillSettings(lastSettingsPanel); };
+            presetNameBox = new TextBox { Watermark = "Preset name (e.g. Testing, Race day)", MinWidth = 260 * s, VerticalContentAlignment = VerticalAlignment.Center };
+            presetRows = new StackPanel();
             settingsPage = new ScrollViewer
             {
-                Content = new StackPanel { Children = { settingsSearch, settingRows } },
+                Content = new StackPanel { Children = { presetRows, settingsSearch, settingRows } },
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             };
             page = new ContentControl();
@@ -730,8 +735,10 @@ namespace RaceDisplay
                 controlRows.Children.Add(OptionRow(r.Name, about, value));
             }
 
-            note.Text = p.Note ?? "";
-            note.IsVisible = !string.IsNullOrEmpty(p.Note);
+            // A note made here (e.g. "Copied") shows for a few seconds over the game's own.
+            bool local = localNote != null && DateTime.Now < localNoteUntil;
+            note.Text = local ? localNote : p.Note ?? "";
+            note.IsVisible = !string.IsNullOrEmpty(note.Text);
             if (p.Rows.Any(r => r.Capturing)) description.Text = "Press the new key combination (with Ctrl / Shift / Alt if you want them). Esc or click again to cancel.";
         }
 
@@ -742,40 +749,219 @@ namespace RaceDisplay
 
         private void FillSettings(HudModel.ControlsPanel p)
         {
+            if (!ReferenceEquals(lastSettingsPanel, p) || presetRows.Children.Count == 0) FillPresets(p);
             lastSettingsPanel = p;
             settingRows.Children.Clear();
-            string section = null;
-            // Grouped by section (in the order sections first appear), filtered by the search box.
+            settingViews.Clear();
+            resetButtons.Clear();
+            double s = scale;
+            // Grouped by section (in the order sections first appear), filtered by the search box. Laps and practice
+            // laps live on the Race tab.
             var order = p.Settings.Select(r => r.Section).Distinct().ToList();
             string q = settingsSearch?.Text?.Trim() ?? "";
             var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            bool searching = words.Length > 0;
             bool Matches(HudModel.SettingRow r)
             {
                 string hay = (r.Section + " " + r.Name + " " + r.Description).ToLowerInvariant();
                 return words.All(w => hay.Contains(w.ToLowerInvariant()));
             }
-            var rows = p.Settings.Where(Matches).OrderBy(r => order.IndexOf(r.Section)).ToList();
+            var rows = p.Settings
+                .Where(r => !r.Name.StartsWith("Laps per race") && !r.Name.StartsWith("Practice laps"))
+                .Where(Matches).OrderBy(r => order.IndexOf(r.Section)).ToList();
             if (rows.Count == 0)
             {
                 var none = Text($"No settings match \"{q}\".", Grey);
-                none.Margin = new Thickness(24 * scale, 8 * scale, 24 * scale, 8 * scale);
-                SoftFontSize(none, 18 * scale);
+                none.Margin = new Thickness(24 * s, 8 * s, 24 * s, 8 * s);
+                SoftFontSize(none, 18 * s);
                 settingRows.Children.Add(none);
             }
+            string section = null;
             foreach (var r in rows)
             {
                 if (r.Section != section)
                 {
                     section = r.Section;
-                    var head = SectionHeader(section);
-                    var line = new Border { Height = 1, Background = SectionLine, Margin = new Thickness(24 * scale, 0, 24 * scale, 4 * scale) };
-                    settingRows.Children.Add(head);
-                    settingRows.Children.Add(line);
+                    settingRows.Children.Add(CollapsibleHeader(section, searching));
+                    settingRows.Children.Add(new Border { Height = 1, Background = SectionLine, Margin = new Thickness(24 * s, 0, 24 * s, 4 * s) });
                 }
+                // A closed section shows just its header (searching opens every section).
+                if (!searching && CollapsedSections.Contains(r.Section)) continue;
+
                 var control = r.Toggle ? MakeSwitch(r) : MakeSlider(r);
-                settingRows.Children.Add(OptionRow(r.Name, r.Description, control));
+                string about = r.Description;
+                if (r.DependsOn != null)
+                    about += $" (Only used with \"{r.DependsOn}\" {(r.DependsOnOff ? "off" : "on")}.)";
+                var row = OptionRow(r.Name, about, control);
+                // Not at its default: a small orange dot before the name.
+                var dot = new Avalonia.Controls.Shapes.Ellipse
+                {
+                    Width = 8 * s, Height = 8 * s, Fill = Brush(HudColor.Orange),
+                    HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(2 * s, 0, 0, 0), IsVisible = r.Changed, IsHitTestVisible = false,
+                };
+                Grid.SetColumn(dot, 0);
+                row.Children.Add(dot);
+                // ...and a small Reset at the end of the name column, to put just this one back to its default.
+                int index = r.Index;
+                var reset = ValueButton("Reset", Brush(HudColor.Orange), 84, () =>
+                {
+                    if (!settingViews.TryGetValue(index, out var view)) return;
+                    Send(index, view.Row.Default);
+                    if (lastSettingsPanel != null) FillSettings(lastSettingsPanel);   // shows the default value
+                });
+                reset.MinHeight = 30 * s;
+                reset.HorizontalAlignment = HorizontalAlignment.Right;
+                reset.VerticalAlignment = VerticalAlignment.Center;
+                reset.Margin = new Thickness(0, 0, 8 * s, 0);
+                reset.IsVisible = r.Changed;
+                Grid.SetColumn(reset, 0);
+                row.Children.Add(reset);
+                // Keep the name clear of the Reset button.
+                if (row.Children.Count > 0 && row.Children[0] is TextBlock nameText)
+                    nameText.Margin = new Thickness(nameText.Margin.Left, 0, 96 * s, 0);
+                resetButtons[r.Index] = reset;
+                settingViews[r.Index] = (r, row, control, dot);
+                SetRowEnabled(row, control, r.Enabled);
+                settingRows.Children.Add(row);
+            }
+        }
+
+        // Settings tab rows as shown, by setting index: to grey out dependants and move the "changed" dot as values change.
+        private readonly Dictionary<int, (HudModel.SettingRow Row, Grid View, Control Value, Control Dot)> settingViews =
+            new Dictionary<int, (HudModel.SettingRow, Grid, Control, Control)>();
+
+        private readonly Dictionary<int, Button> resetButtons = new Dictionary<int, Button>();
+
+        private static void SetRowEnabled(Grid row, Control value, bool enabled)
+        {
+            value.IsEnabled = enabled;
+            foreach (var child in row.Children)
+                if (child != null && !(child is Avalonia.Controls.Shapes.Ellipse)) child.Opacity = enabled ? 1 : 0.4;
+        }
+
+        /// <summary>A value was changed: update its dot, and grey out / bring back the settings that depend on it.</summary>
+        private void SettingChangedLocally(int index, double value)
+        {
+            if (!settingViews.TryGetValue(index, out var v)) return;
+            v.Row.Value = value;
+            double tolerance = Math.Max(1e-6, v.Row.Step / 2);
+            v.Dot.IsVisible = Math.Abs(value - v.Row.Default) > tolerance;
+            if (resetButtons.TryGetValue(index, out var reset)) reset.IsVisible = v.Dot.IsVisible;
+            foreach (var other in settingViews.Values)
+                if (other.Row.DependsOn == v.Row.Name)
+                    SetRowEnabled(other.View, other.Value, (value >= 0.5) != other.Row.DependsOnOff);
+        }
+
+        // ---- sections that can be folded away (remembered in SettingsSections.json; Advanced starts folded)
+        private static HashSet<string> collapsedSections;
+        private static string SectionsFile => System.IO.Path.Combine(PluginPaths.Folder, "SettingsSections.json");
+
+        private static HashSet<string> CollapsedSections
+        {
+            get
+            {
+                if (collapsedSections != null) return collapsedSections;
+                try
+                {
+                    if (System.IO.File.Exists(SectionsFile))
+                        collapsedSections = new HashSet<string>(System.Text.Json.JsonSerializer.Deserialize<List<string>>(System.IO.File.ReadAllText(SectionsFile)) ?? new List<string>());
+                }
+                catch { }
+                return collapsedSections ??= new HashSet<string> { "Advanced" };
+            }
+        }
+
+        private Control CollapsibleHeader(string section, bool searching)
+        {
+            bool closed = !searching && CollapsedSections.Contains(section);
+            // The arrow is drawn (the game's font has no arrow characters): pointing right when folded, down when open.
+            double sc = scale;
+            var head = SectionHeader(section);
+            head.Margin = new Thickness(10 * sc, head.Margin.Top, 0, head.Margin.Bottom);
+            var arrow = new Avalonia.Controls.Shapes.Path
+            {
+                Data = Geometry.Parse(closed ? "M 0,0 L 9,6 L 0,12 Z" : "M 0,0 L 12,0 L 6,9 Z"),
+                Fill = White,
+                Width = 12 * sc, Height = 12 * sc,
+                Stretch = Stretch.Uniform,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(18 * sc, head.Margin.Top - head.Margin.Bottom, 0, 0),
+            };
+            var line = new StackPanel { Orientation = Orientation.Horizontal, Children = { arrow, head } };
+            var holder = new Border { Background = Brushes.Transparent, Child = line, Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand) };
+            holder.PointerPressed += (_, e) =>
+            {
+                if (searching) return;
+                if (!CollapsedSections.Remove(section)) CollapsedSections.Add(section);
+                try
+                {
+                    System.IO.Directory.CreateDirectory(PluginPaths.Folder);
+                    System.IO.File.WriteAllText(SectionsFile, System.Text.Json.JsonSerializer.Serialize(CollapsedSections.ToList()));
+                }
+                catch { }
+                e.Handled = true;
+                if (lastSettingsPanel != null) FillSettings(lastSettingsPanel);
+            };
+            holder.PointerEntered += (_, __) => description.Text = closed
+                ? $"Click to open the {section} section."
+                : $"Click to fold the {section} section away (it's remembered).";
+            return holder;
+        }
+
+        /// <summary>
+        /// Settings presets, above the search box: save every Settings-tab value (laps too) under a name, and switch
+        /// between them (e.g. Testing and Race day).
+        /// </summary>
+        private void FillPresets(HudModel.ControlsPanel p)
+        {
+            double s = scale;
+            presetRows.Children.Clear();
+            presetRows.Children.Add(SectionHeader("Presets"));
+            presetRows.Children.Add(new Border { Height = 1, Background = SectionLine, Margin = new Thickness(24 * s, 0, 24 * s, 4 * s) });
+
+            if (p.Presets.Count > 0)
+            {
+                if (pickedPreset == null || !p.Presets.Contains(pickedPreset))
+                    pickedPreset = p.CurrentPreset != null && p.Presets.Contains(p.CurrentPreset) ? p.CurrentPreset : p.Presets[0];
+                var pick = new ComboBox { ItemsSource = p.Presets.ToList(), SelectedItem = pickedPreset, MinWidth = 220 * s };
+                pick.SelectionChanged += (_, __) => { if (pick.SelectedItem is string n) pickedPreset = n; };
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 * s };
+                row.Children.Add(pick);
+                row.Children.Add(ValueButton("Load", White, 110, () => commands.Enqueue(new MenuCommand(MenuAction.LoadPreset, text: pickedPreset))));
+                row.Children.Add(ValueButton("Delete", White, 110, () => commands.Enqueue(new MenuCommand(MenuAction.DeletePreset, text: pickedPreset))));
+                row.Children.Add(ValueButton("Export", White, 110, () => commands.Enqueue(new MenuCommand(MenuAction.ExportPreset, text: pickedPreset))));
+                presetRows.Children.Add(OptionRow("Preset" + (p.CurrentPreset != null ? $" (now: {p.CurrentPreset})" : ""),
+                    "Load puts every setting on this tab (and the laps on the Race tab) back to how they were when the preset was saved. Keys, records and courses aren't part of a preset.", row));
             }
 
+            if (presetNameBox.Parent is Panel oldParent) oldParent.Children.Remove(presetNameBox);
+            var nameRow = new Grid();
+            nameRow.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
+            nameRow.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            var save = ValueButton("Save", White, 110, () =>
+            {
+                commands.Enqueue(new MenuCommand(MenuAction.SavePreset, text: presetNameBox.Text));
+                pickedPreset = presetNameBox.Text?.Trim();
+                presetNameBox.Text = "";
+            });
+            save.Margin = new Thickness(8 * s, 0, 0, 0);
+            Grid.SetColumn(presetNameBox, 0); nameRow.Children.Add(presetNameBox);
+            Grid.SetColumn(save, 1); nameRow.Children.Add(save);
+            presetRows.Children.Add(OptionRow("Save settings as",
+                "Type a name (e.g. Testing or Race day) and press Save to keep all the current settings as a preset. Saving with an existing name updates it.", nameRow));
+
+            // Sharing: Export writes the picked preset to a file in the presets folder; files there (yours, or ones
+            // copied in from someone else) are listed with an Import button.
+            presetRows.Children.Add(OptionRow("Preset files",
+                $"Export writes a preset to a .racepreset.json file in {p.PresetFolder} to share. To use someone else's, copy their file into that folder (Open folder), then press Import next to it. Importing a preset with the same name as one you have replaces yours.",
+                Widen(ValueButton("Open folder", White, 0, () => commands.Enqueue(new MenuCommand(MenuAction.OpenPresetFolder))))));
+            foreach (var (name, path) in p.PresetFiles)
+            {
+                string file = path;
+                presetRows.Children.Add(OptionRow("    " + name, $"Preset file: {System.IO.Path.GetFileName(path)}. Import adds it to your presets.",
+                    Widen(ValueButton("Import", White, 0, () => commands.Enqueue(new MenuCommand(MenuAction.ImportPreset, text: file))))));
+            }
         }
 
         // ---------------------------------------------------------------- Race tab
@@ -985,7 +1171,7 @@ namespace RaceDisplay
             Line(Word("Menu", HudColor.Cyan), "Press G (the terminal: Character, Grid, Build ... Map) and pick the Racing Display tab after Map, or press Shift+J for its Race page. Its tabs (Race, Records, Courses, Settings, Controls) are the ones named below.");
             Line(Word("1. Edit mode", HudColor.Orange), "Press Ctrl+F (or Courses tab > Course edit mode). Aim at the ring or arch you've built and left click: it becomes the start/finish gate, fitted to the ring's opening. Right click one to remove it.");
             Line(Word("2. Checkpoints", HudColor.Orange), "Hold Shift+R, pick Checkpoint on the wheel, then left click each checkpoint ring in the order you'll fly them. For a point-to-point course pick Start gate and Finish gate instead of Start/Finish. Press Ctrl+F again when you're done.");
-            Line(Word("3. Race", HudColor.Green), "Fly through the gate to start (the right way, towards the first checkpoint; going through backwards or in the spectator camera doesn't start a race; Settings > Race start > Only start going forwards turns the backwards check off). Each pass through the gate completes a lap. Set the number of laps (and any practice laps) on the Race tab (Shift+J).");
+            Line(Word("3. Race", HudColor.Green), "Fly through the gate to start (the right way, towards the first checkpoint; going through backwards or in the spectator camera doesn't start a race; Settings > Race > Only start going forwards turns the backwards check off). Each pass through the gate completes a lap. Set the number of laps (and any practice laps) on the Race tab (Shift+J).");
             Line(Word("Countdown", HudColor.Yellow), "For a standing start, stop near the gate and hold still: you get 3, 2, 1, GO! The clock starts when you fly through the gate.");
             Line(Word("Practice", HudColor.Yellow), "Practice laps are timed but don't count. The race starts when you finish the last one at the gate.");
 
@@ -1000,8 +1186,8 @@ namespace RaceDisplay
             Line(Word("Then", HudColor.Green), "Check the route in edit mode (Ctrl+F), fix anything with the tools, save it as a named course if you like, then save the game: courses are kept in the world's own save.");
 
             Section("Saving and sharing");
-            Line(Word("Courses", HudColor.White), "The Courses tab saves and loads courses, changes the checkpoint order, builds a course from grids or antennas named Start / CP1 / CP2..., and can switch every antenna in the world off or on.");
-            Line(Word("World save", HudColor.Cyan), "Courses belong to the world they're made in. They're written into the world's save folder (RaceDisplayCourses.json) every time you save the game, and loaded with the world, so they never show up in other worlds. Publish the world and players who download it, and have this plugin, get the course set up automatically (a new world started from a Workshop download finds the course from the Workshop copy).");
+            Line(Word("Courses", HudColor.White), "The Courses tab saves and loads courses, changes the checkpoint order, builds a course from grids or antennas named Start / CP1 / CP2..., and can switch every antenna in the world off or on. Clear removes this world's gates, checkpoints and sectors (saved courses stay). Rename a saved course by typing the new name in Save as and pressing Rename next to it.");
+            Line(Word("World save", HudColor.Cyan), "Courses belong to the world they're made in. They're written into the world's save folder (RaceDisplayCourses.json) every time you save the game, and loaded with the world, so they never show up in other worlds. Publish the world and players who download it, and have this plugin, get the course set up automatically (a new world started from the Workshop screen gets the course from that Workshop item, matched by its Workshop id).");
             Page("Timer and colours");
             Section("Timer panel");
             Line(Word("LAP 2 / 3", HudColor.White), "The lap you're on, and checkpoints reached this lap. The big number is this lap's time; TOTAL underneath is the race time so far, with penalties.");
@@ -1019,52 +1205,53 @@ namespace RaceDisplay
             Line(Word("Orange", HudColor.Orange), "The checkpoint to fly to next.");
             Line(Word("Yellow", HudColor.Yellow), "A sector slower than your best this race (sector colours), and lap times in the splits table, records and practice.");
             Line(Row(Dot(HudColor.Purple, HudColor.Purple, false), Dot(HudColor.Green, HudColor.Green, false), Dot(HudColor.Yellow, HudColor.Yellow, false)),
-                "Sector colours: each checkpoint dot under the timer takes the colour of the sector you just flew, like F1 timing: purple = fastest ever on this course, green = your best this race, yellow = slower. Settings > Display > Sector colours.");
+                "Sector colours: each checkpoint dot under the timer takes the colour of the sector you just flew, like F1 timing: purple = fastest ever on this course, green = your best this race, yellow = slower. Settings > Minimap > Sector colours.");
 
             Page("Penalties");
             Section("Penalties");
             Line(Row(Word("+5s", HudColor.Red), Dot(HudColor.Red, HudColor.Red, true)), "Missed checkpoint: you flew through a later checkpoint without this one. You get a red MISSED message straight away and its split shows MISSED. The penalty (5 s by default) is added to the lap.");
             Line(Row(Word("+5s", HudColor.Red), Cross()), "Crash: a sudden hard stop while going fast (20 m/s or more by default). The timer flashes red and the penalty is added to the lap.");
-            Line(Word("Immunity", HudColor.Yellow), "After a crash penalty there's no other crash penalty for 5 s (Settings > Penalties > Crash immunity, up to 60 s, 0 = off), so bouncing off a wall or tumbling only counts once. The crash message says how long it lasts.");
+            Line(Word("Immunity", HudColor.Yellow), "After a crash penalty there's no other crash penalty for 5 s (Settings > Penalties > Crash immunity, up to 60 s, 0 = off), so bouncing off a wall or tumbling only counts once. With Crash immunity until back up to speed on, there's also no other crash penalty until you're back above Crash immunity speed (25 m/s by default).");
             Line(Word("+10s", HudColor.Red), "In the lap list, each lap shows its total penalty, then one ring per missed checkpoint and one cross per crash. Penalty sizes and crash sensitivity are on the Settings tab.");
 
             Page("HUD and markers");
             Section("Markers");
-            Line(Word("CP 3  1.2 km", HudColor.Orange), "Each checkpoint has a label on screen. The one to fly to next is bigger, brighter and shows how far away it is. Ones you've flown through turn green and missed ones red. Settings > Display > Only mark the next checkpoints shows markers on just the next few (Checkpoints marked ahead, 3 by default).");
+            Line(Word("CP 3  1.2 km", HudColor.Orange), "Each checkpoint has a label on screen. The one to fly to next is bigger, brighter and shows how far away it is. Ones you've flown through turn green and missed ones red. Settings > Markers > Only mark the next checkpoints shows markers on just the next few (Checkpoints marked ahead, 3 by default).");
             Line(Word("START / FINISH", HudColor.Cyan), "The start/finish gate (or START and a purple FINISH on a point-to-point course). It shows its distance when it's where you're heading (before the race and after the last checkpoint).");
             Line(Arrow(), "When the next checkpoint is off screen or behind you, an arrow at the edge of the screen points to it.");
             Section("Panels");
+            Line(Word("Layout", HudColor.White), "Settings > HUD > HUD layout: Centre (timer top centre), or Left / Right (the timer in that top corner with the lap list under it; the minimap in the other corner with best race and best lap beside it, and the splits under them).");
             Line(Word("LAPS", HudColor.White), "Lap list (left): every lap time, your best this race in green. After the finish the results appear under it.");
             Line(Word("SPLITS", HudColor.White), "Splits (right): for each checkpoint this lap, the gap to your best lap, the SECTOR time (from the previous checkpoint) and the lap time. After the finish it shows every lap side by side (sector times, or lap times if you switch that off), with top and average speed.");
             Section("Messages and HUD modes");
             Line(Word("Race messages", HudColor.Yellow), "GO!, checkpoints, laps, missed checkpoints and crashes drop down in a tab under the timer (long ones wrap onto a second line). Setup messages (gate placed and so on) show in the middle of the screen.");
-            Line(Word("Race HUD only", HudColor.Cyan), "The game's HUD key (U) has an extra step: after the minimal HUD it hides the game's own HUD and flight HUD and shows only the race HUD; press U again to carry on to no HUD. Settings > Display > Race HUD only turns it on or off directly.");
+            Line(Word("Race HUD only", HudColor.Cyan), "The game's HUD key (U) has an extra step: after the minimal HUD it hides the game's own HUD and flight HUD and shows only the race HUD; press U again to carry on to no HUD. Settings > HUD > Race HUD only turns it on or off directly.");
             Page("Minimap and Race Map");
             Section("Maps");
-            Line(Word("Minimap", HudColor.Cyan), "Round, in the top left corner (top right with swapped sides), showing the whole course. With Settings > Minimap > Minimap zooms in while moving on (off by default) it zooms in and follows you from 20 m/s, and zooms back out as you slow down. The next checkpoint pulses (with a dashed line from you to it); missed checkpoints are red. Each gate and checkpoint has a label, and the racing line uses its racing line colours; start gate facing up. Dashed route between the gates and checkpoints (next one orange, flown ones green), named sectors as coloured bands, the best lap's line, you (arrow) and the ghosts. Settings > Minimap.");
-            Line(Word("Race Map", HudColor.Cyan), "G > Map > Race Map: a big version of the minimap. The switches above it (Sectors, Checkpoints, Labels, Route, Racing line, Ghosts, You) hide or show those on the Race Map and the minimap alike, and are remembered.");
+            Line(Word("Minimap", HudColor.Cyan), "Round, in the top left corner (top right with HUD layout Left), showing the whole course. With Settings > Minimap > Minimap zooms in while moving on (off by default) it zooms in and follows you from 20 m/s, and zooms back out as you slow down. The next checkpoint pulses (with a dashed line from you to it); missed checkpoints are red. Each gate and checkpoint has a label, and the racing line uses its racing line colours; start gate facing up. Dashed route between the gates and checkpoints (next one orange, flown ones green), named sectors as coloured bands, the best lap's line, you (arrow) and the ghosts. Settings > Minimap.");
+            Line(Word("Race Map", HudColor.Cyan), "G > Map > Race Map: a big version of the minimap. The switches above it (Sectors, Checkpoints, Labels, Route, Racing line, Ghosts, You) hide or show those on the Race Map and the minimap alike, and are remembered. The game's own map pieces (Fast Travel, map data) are hidden while it shows.");
             Line(Word("Sectors", HudColor.Green), "Courses tab > Sectors: name parts of the course (e.g. \"Hairpin\", from CP 3 to CP 5). Each shows on the minimap and Race Map as a coloured band with its name, and is saved with the course.");
             Page("Ghosts and replays");
             Section("Ghosts");
-            Line(Word("BEST LAP", HudColor.Purple), "The ghost (labelled BEST LAP) is where your best lap was at this moment of the lap: an outline of the ship that set it, flying with the same heading and roll (or a purple diamond with Settings > Ghost and replay > Ghost as ship projection off). Ahead of you = you're behind your best; behind you = you're ahead. The magenta racing line is your best lap's path. The Race tab (Shift+J) picks whose lap it is: your course best, a ship's best or a ghost file.");
-            Line(Word("Racing line", HudColor.Yellow), "The best lap's line is coloured to show where time is won and lost (Settings > Display > Racing line colours). Speed: red where it was slow, yellow, green where it was fastest. Braking: red where it was slowing down (harder = redder), green where it was speeding up, white where it held its speed. Plain: magenta.");
+            Line(Word("BEST LAP", HudColor.Purple), "The ghost (labelled BEST LAP) is where your best lap was at this moment of the lap: an outline of the ship that set it, flying with the same heading and roll (or a purple diamond with Settings > Ghost and racing line > Ghost as ship projection off). Ahead of you = you're behind your best; behind you = you're ahead. The magenta racing line is your best lap's path. The Race tab (Shift+J) picks whose lap it is: your course best, a ship's best or a ghost file.");
+            Line(Word("Racing line", HudColor.Yellow), "The best lap's line is coloured to show where time is won and lost (Settings > Ghost and racing line > Racing line colours). Speed: red where it was slow, yellow, green where it was fastest. Braking: red where it was slowing down (harder = redder), green where it was speeding up, white where it held its speed. Plain: magenta.");
             Line(Word("2nd ghost", HudColor.Orange), "Records tab > 2nd ghost (on a ship's row or a ghost file) adds a second, orange ghost that flies at the same time as the main one, in races and in replays: e.g. your best against another ship's best. Its racing line shows too, in orange, and the main line turns purple so you can tell them apart. Press it again to turn it off.");
             Line(Word("Ghost files", HudColor.Purple), "Records tab > Ghost files: export your best lap (course best, or a ship's best) as a file to share, and load other players' files from the ghosts folder. Watch replays one with the spectator camera; Race makes the ghost, racing line and live gap follow it instead of your own best. A ghost only fits the course it was flown on.");
             Section("Replays");
             Line(Word("Replay", HudColor.Purple), "Records tab > Watch best lap (or the replay shortcut): the spectator camera follows the ghost of your ship round your best lap at real speed, then puts you back in your seat. Racing is paused while it plays. The camera orbits the ghost by default: move the mouse to swing round it, W / S to zoom; Ctrl+Shift+C switches to a fixed chase camera. Replays use the game's cinematic spectator (smooth movement, and its look-around keys let you aim away from the ghost); turn that off in Settings > Ghost and replay.");
             Page("Results and records");
             Section("After the race");
-            Line(Word("Speed graph", HudColor.Green), "In the results: your speed round the lap (start on the left, finish on the right) for your best lap this race and the course record, so you can see where you lost speed. Dashed lines with numbers mark the checkpoints, and a dot on each line shows where that lap went through them.");
-            Line(Word("Race stats", HudColor.White), "After the finish the splits table adds G-forces per lap (G MAX = hardest cornering, G AVG = average cornering, BRAKE = hardest slowing down) and distance flown per lap (shortest in green). A separate RACE STATS box in the top corner shows the ship, how you did against its best, total distance, time at top speed, average lap and consistency (best to worst lap spread); turn it off in Settings > Display. G-forces come from the ship's change of velocity, so impacts over 30 g are left out.");
-            Line(Word("Results", HudColor.Yellow), "The race results can compare with the best on the course (any ship) or the best in the ship you flew: press Ctrl+B (Controls tab: Results: overall / this ship) while they're showing to switch, or set it in Settings > Display. In ship mode the headline, best lap colour, possible lap and the graph all use that ship's own bests.");
+            Line(Word("Speed graph", HudColor.Green), "In the results, two graphs take turns, every 5 seconds by default (Settings > Panels > Results graphs switch every; 0 = speed graph only). 1/2 SPEED: your speed round the lap (start on the left, FIN on the right) for your best lap this race against the course record as it was before the race (or your last lap), shaded green where you were faster and red where slower. 2/2 TIME GAP: how far ahead (above the middle line, green) or behind (below, red) of that lap you were at each point, with the scale in seconds at the left. Lines marked CP n are the checkpoints; red ones were missed.");
+            Line(Word("Race stats", HudColor.White), "After the finish the splits table adds G-forces per lap (G MAX = hardest cornering, G AVG = average cornering, BRAKE = hardest slowing down) and distance flown per lap (shortest in green). A separate RACE STATS box in the top corner shows the ship, how you did against its best, total distance, time at top speed, average lap and consistency (best to worst lap spread); turn it off in Settings > Panels. G-forces come from the ship's change of velocity, so impacts over 30 g are left out.");
+            Line(Word("Results", HudColor.Yellow), "WITHOUT PENALTIES is the time you actually flew. The penalties line names the checkpoints you missed. The VS BEST column in the sectors table is this race's best for each sector (and lap) against the course best before the race: purple minus = you beat it, red plus = slower. The race results can compare with the best on the course (any ship) or the best in the ship you flew: press Ctrl+B (Controls tab: Results: overall / this ship) while they're showing to switch, or set it in Settings > Panels. In ship mode the headline, best lap colour, possible lap and the graph all use that ship's own bests.");
             Section("Records");
             Line(Word("Ships", HudColor.Cyan), "Every race saves times for the ship you flew, by its name. Records tab > Ships on this course compares them: fastest in purple, the others with their gap in yellow. Rename a ship in its terminal to keep separate times for each version.");
-            Line(Word("Records", HudColor.Yellow), "The Records tab lists your best 5 races on this course for each number of laps, and has the reset buttons.");
+            Line(Word("Records", HudColor.Yellow), "The Records tab lists your best 5 races on this course for each number of laps, and has the reset buttons. Copy last race (or click any race) copies it as a line of text to paste into a chat.");
             Page("Menu, settings and keys");
             Section("Racing Display menu");
             Line(Word("Race", HudColor.Green), "Press Shift+J (or the Race tab) to set the laps and practice laps and pick whose lap you race against: your course best, any ship's best lap on this course, or a ghost file. Speeds use the game's speed unit (Options > Interface).");
-            Line(Word("Settings", HudColor.White), "Hide panels, swap sides, turn markers, the arrow or sounds off, and change penalties, distances and sizes on the Settings tab. The search box at the top finds a setting by name or description; point at a setting to see what it does. Panels use the game's UI background opacity (Options > Interface) unless you turn Panel darkness: use the game's off.");
-            Line(Word("Controls", HudColor.White), "The Controls tab lists every key and lets you change them: click one, then press the new key combination (Esc cancels); keys used by two actions show in red. Single keys use Shift: Shift+J for race setup, Shift+R (hold) for the edit tool wheel.");
+            Line(Word("Settings", HudColor.White), "Hide panels, choose the HUD layout, turn markers, the arrow or sounds off, and change penalties, distances and sizes on the Settings tab. Settings are grouped: Race, HUD, Panels, Markers, Minimap, Ghost and racing line, Penalties, Replay, Course editing and Advanced. Click a section's title (the arrow) to fold it away or open it; Advanced starts folded. A setting that only matters when another is on is greyed out while that one is off, and an orange dot (with a Reset button) marks every setting that isn't at its default. Presets at the top save all the settings under a name (e.g. Testing or Race day) to switch between them with Load; Export writes one to a file to share, and other players' files in the presets folder can be imported. The search box finds a setting by name or description, folded sections included; point at a setting to see what it does. Panels use the game's UI background opacity (Options > Interface) unless you turn Panel darkness: use the game's off.");
+            Line(Word("Controls", HudColor.White), "The Controls tab lists every key and lets you change them: click one, then press the new key combination (Esc cancels); keys used by two actions show in red. Single keys use Shift: Shift+J for race setup; in edit mode Shift+R (hold) for the tool wheel, Shift+T for the placement mode, Shift+L for the best lap line and Shift+M to move a checkpoint (aim at it, press Shift+M, then left click its new place).");
 
             if (search != null && page.Children.Count == 0)
             {
@@ -1111,6 +1298,17 @@ namespace RaceDisplay
             Grid.SetColumn(courseNameBox, 0); nameRow.Children.Add(courseNameBox);
             Grid.SetColumn(save, 1); nameRow.Children.Add(save);
             courseRows.Children.Add(OptionRow("Save as", "Type a name and press Save to keep this course (gate and checkpoints). Saving with an existing name replaces it.", nameRow));
+            courseRows.Children.Add(OptionRow("Clear course",
+                "Removes this world's start / finish gate, checkpoints and sectors (courses saved in the list below stay). Use it if a course turned up that doesn't belong to this world.",
+                ConfirmButton("Clear", "This removes the gates, checkpoints and sectors from this world. Saved courses stay in the list. It can't be undone.", MenuAction.ClearCourse)));
+
+            // ---- where the reset race key teleports you (with Settings > Race > Reset race teleports to the start)
+            var spotButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 * s };
+            spotButtons.Children.Add(ValueButton("Set here", White, 110, () => commands.Enqueue(new MenuCommand(MenuAction.SetStartSpot))));
+            spotButtons.Children.Add(ValueButton("Clear", White, 110, () => commands.Enqueue(new MenuCommand(MenuAction.ClearStartSpot))));
+            courseRows.Children.Add(OptionRow("Start spot: " + (p.StartSpot ?? "Just behind the start gate"),
+                "Where the reset race key (Ctrl+R) puts your ship when Settings > Race > Reset race teleports to the start is on. Sit in your ship at the spot, facing the way you want to start, and press Set here (or the set start spot key, Ctrl+T, while flying): your seat goes back to exactly that place and direction. Clear goes back to just behind the start gate. Saved with the course in the world.",
+                spotButtons));
 
             // ---- named sectors
             Header("Sectors");
@@ -1218,8 +1416,35 @@ namespace RaceDisplay
                 var load = ValueButton(current ? "Loaded" : "Load", current ? Grey : White, 130, () => commands.Enqueue(new MenuCommand(MenuAction.LoadCourse, text: n)));
                 var del = ValueButton("Delete", Brush(HudColor.Red), 110, () =>
                     ShowConfirm($"Delete the saved course '{n}'? Its best times stay (they belong to the gate position).", () => commands.Enqueue(new MenuCommand(MenuAction.DeleteCourse, text: n))));
-                courseRows.Children.Add(OptionRow($"{name}   ({info})", $"Load '{name}' to race it (replaces the current gate and checkpoints), or delete it.", Buttons(load, del)));
+                var rename = ValueButton("Rename", White, 120, () =>
+                    commands.Enqueue(new MenuCommand(MenuAction.RenameCourse, text: n + "\n" + (courseNameBox.Text ?? ""))));
+                courseRows.Children.Add(OptionRow($"{name}   ({info})",
+                    $"Load '{name}' to race it (replaces the current gate and checkpoints), or delete it. To rename it, type the new name in the Save as box above and press Rename.",
+                    Buttons(load, rename, del)));
             }
+        }
+
+        private string localNote;
+        private DateTime localNoteUntil;
+
+        private void ShowNote(string text)
+        {
+            localNote = text;
+            localNoteUntil = DateTime.Now.AddSeconds(4);
+            if (note != null) { note.Text = text; note.IsVisible = true; }
+        }
+
+        /// <summary>Puts text on the clipboard and says so under the tabs.</summary>
+        private void CopyText(string text, Visual from)
+        {
+            try
+            {
+                var clipboard = TopLevel.GetTopLevel(from)?.Clipboard;
+                if (clipboard == null) { ShowNote("Couldn't reach the clipboard"); return; }
+                _ = clipboard.SetTextAsync(text);
+                ShowNote("Copied: " + text);
+            }
+            catch (Exception e) { ShowNote("Couldn't copy: " + e.Message); }
         }
 
         private static Button Widen(Button b) { b.HorizontalAlignment = HorizontalAlignment.Stretch; b.MinWidth = 200; return b; }
@@ -1243,6 +1468,17 @@ namespace RaceDisplay
                 "Watch your best lap on this course: the spectator camera follows the ghost of your ship round the lap. It starts when you close the menu, puts you back in your seat when it ends, and the replay shortcut (Controls tab) stops it early.",
                 watch));
 
+            // Copy a race as text (to paste into a chat): the latest race here, or click any race in the lists below.
+            if (p.LastRaceCopy != null)
+            {
+                string last = p.LastRaceCopy;
+                var copy = ValueButton("Copy last race", White, 0, () => CopyText(last, recordRows));
+                copy.HorizontalAlignment = HorizontalAlignment.Stretch;
+                recordRows.Children.Add(OptionRow("Copy results",
+                    "Copies your latest race on this course as one line of text (course, laps, total, penalties, best lap, top speed, ship, date) to paste into Discord or a chat. Click any race in the lists below to copy that one.",
+                    copy));
+            }
+
             string group = null;
             foreach (var r in p.Records)
             {
@@ -1255,7 +1491,17 @@ namespace RaceDisplay
                 }
                 var colour = r.IsRecord ? Brush(HudColor.Purple) : White;
                 var pen = r.Penalty == "clean" ? Brush(HudColor.Green) : Brush(HudColor.Red);
-                recordRows.Children.Add(RecordLine(s, r.Rank.ToString(), r.Total, r.BestLap, r.Penalty, r.TopSpeed, r.Ship, r.Date, colour, pen, r.IsRecord));
+                var line = RecordLine(s, r.Rank.ToString(), r.Total, r.BestLap, r.Penalty, r.TopSpeed, r.Ship, r.Date, colour, pen, r.IsRecord);
+                if (r.CopyText != null)
+                {
+                    // Click a race to copy it as text.
+                    string text = r.CopyText;
+                    line.Background = Brushes.Transparent;
+                    line.Cursor = new Avalonia.Input.Cursor(Avalonia.Input.StandardCursorType.Hand);
+                    line.PointerEntered += (_, __) => description.Text = "Click to copy this race as text: " + text;
+                    line.PointerPressed += (_, e) => { CopyText(text, line); e.Handled = true; };
+                }
+                recordRows.Children.Add(line);
             }
 
             // Ships compared: best times for each ship you've raced this course in.
@@ -1514,17 +1760,25 @@ namespace RaceDisplay
 
             // Dims the menu and blocks clicks to it until Yes or Cancel.
             confirmLayer = new Grid { Background = Argb(170, 0, 0, 0), Children = { box } };
-            overlay.Children.Add(confirmLayer);
-            overlay.Focus();
+            // In the terminal tab (G) there's no pause-menu overlay: the question goes over the tab's own page.
+            Panel holder = overlay != null && Avalonia.VisualTree.VisualExtensions.GetVisualRoot(overlay) != null ? overlay : (Panel)terminalHost ?? overlay;
+            if (holder == null) { onYes(); confirmLayer = null; return; }
+            if (holder is Grid g && g.RowDefinitions.Count > 1) Grid.SetRowSpan(confirmLayer, g.RowDefinitions.Count);
+            holder.Children.Add(confirmLayer);
+            holder.Focus();
         }
 
         private void CloseConfirm()
         {
-            if (confirmLayer != null && overlay != null) overlay.Children.Remove(confirmLayer);
+            if (confirmLayer?.Parent is Panel parent) parent.Children.Remove(confirmLayer);
             confirmLayer = null;
         }
 
-        private void Send(int index, double value) => commands.Enqueue(new MenuCommand(MenuAction.SetValue, index, value));
+        private void Send(int index, double value)
+        {
+            commands.Enqueue(new MenuCommand(MenuAction.SetValue, index, value));
+            SettingChangedLocally(index, value);
+        }
 
         private Control MakeSwitch(HudModel.SettingRow r)
         {

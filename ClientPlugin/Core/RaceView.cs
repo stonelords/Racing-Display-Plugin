@@ -31,6 +31,10 @@ namespace RaceDisplay.Core
 
         /// <summary>Race stats shown under the splits after the finish (label, value, colour).</summary>
         public System.Collections.Generic.IReadOnlyList<(string Label, string Value, HudColor Colour)> RaceStats;
+
+        /// <summary>The course's best sectors, best checkpoint times and best lap when the race started (for the +/- column).</summary>
+        public System.Collections.Generic.IReadOnlyList<double?> SectorsBefore, SplitsBefore;
+        public double? LapBefore;
     }
 
     /// <summary>How hard a lap was flown, measured from the ship's change of velocity.</summary>

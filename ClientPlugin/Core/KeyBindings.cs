@@ -44,6 +44,7 @@ namespace RaceDisplay.Core
         {
             // Racing
             (GateKey.ResetTimer, "Reset race"),
+            (GateKey.SetStartSpot, "Set start spot here"),
             (GateKey.LapCount, "Race setup (laps, ghost)"),
             (GateKey.ResultsMode, "Results: overall / this ship"),
             (GateKey.ToggleMarkers, "Markers on/off"),
@@ -55,6 +56,7 @@ namespace RaceDisplay.Core
             (GateKey.EditWheel, "Edit tool wheel (hold)"),
             (GateKey.PlacementMode, "Placement: grid / blocks / air"),
             (GateKey.EditLine, "Best lap line while editing"),
+            (GateKey.MoveCheckpoint, "Move a checkpoint"),
             (GateKey.Undo, "Undo course edit"),
             (GateKey.Redo, "Redo course edit"),
             (GateKey.ReverseCourse, "Reverse course"),
@@ -77,6 +79,7 @@ namespace RaceDisplay.Core
                 case GateKey.ReverseCourse:
                 case GateKey.PlacementMode:
                 case GateKey.EditLine:
+                case GateKey.MoveCheckpoint:
                 case GateKey.Grow:
                 case GateKey.Shrink:
                     return "Course edit mode";
@@ -117,6 +120,8 @@ namespace RaceDisplay.Core
                 case GateKey.ReverseCourse: return new KeyBinding(0x49 /* I */, ctrl: true, shift: true);
                 case GateKey.PlacementMode: return new KeyBinding(0x54 /* T */, shift: true);
                 case GateKey.EditLine: return new KeyBinding(VK_L, shift: true);
+                case GateKey.MoveCheckpoint: return new KeyBinding(0x4D /* M */, shift: true);
+                case GateKey.SetStartSpot: return new KeyBinding(0x54 /* T */, ctrl: true);
                 default: return new KeyBinding();
             }
         }
