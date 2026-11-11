@@ -11,10 +11,22 @@ Place a box in the world (or round a checkpoint structure) and race laps through
 
 **Ghost, racing line and sectors:**
 - **Ghost:** once you've set a best lap, a see-through ghost of the ship that set it flies the lap alongside you (same heading and roll), with your gap to it. Turn "Ghost as ship projection" off for a small purple diamond instead.
+- **Crash detection:** by default a crash is the game's own collision damage to your ship (Settings > Penalties > Crash detection: Hull damage / Speed drop / Either, and Crash damage needed). Works in single player and when hosting; elsewhere it uses the speed drop.
+- **Ship analyser** (Race tab > Open; Esc leaves it, the race HUD is hidden meanwhile): look at a grid to see its mass, size, PCU, thrust and acceleration each way, gyros, power and hydrogen (generated and stored), cargo and centre of mass (drawn on it with thrust arrows). Left click keeps one, right click compares another.
+- **RPI classes** (RPI tab > RPI designer): make, duplicate, export / import and copy / paste classes with a budget, minimum weight and lighter-ship weight steps; give any block in the game a cost straight in the list (one row per block, sizes side by side, with icons, search, category filter and sorting), limit or ban blocks, see block stats, and check the last analysed ship live. The Ship analyser shows each ship's total RPI against the budget, broken block limits and what the total is made of.
+- **Lap playback:** after a race the Race Map plays the lap back: the line draws in with the time, checkpoints turn green / red as flown / missed, crashes appear as they happened; Replay lap plays it again.
+- **Race Map:** sectors along the racing line, gate bars (chequered start / finish), your lap coloured green / red where it gained / lost on the record, softer off-line bands, scale bar, north arrow, height profile, a key, hover details, and zoom (wheel) / drag / double-click reset.
+- **Possible lap line:** Race tab > Possible lap (best sectors) races your best sectors joined into one lap (ghost, racing line and live gap). Sectors flown from this version on keep their path.
+- **Results laps:** Shift+[ / Shift+] step the results graphs and map through the best lap and each lap. The map shows the lap's path, missed checkpoints in red and a red X at each crash.
+- **Flight aids:** speedometer (with Race HUD only by default), the game's gyro kept with Race HUD only (optionally target based), a flight keys display (Q W E A S D C Space) in a bottom corner, and a speed vector marker where the ship is actually heading. All in Settings > HUD.
+- **Records:** Race button on each ship; deleting the ship with the course best lap hands it to the next fastest ship.
+- **F1 > Racing Display > How it's worked out:** how the gaps, possible lap, time at top speed, consistency, G-forces, penalties and graphs are calculated.
 - **Racing line:** a faint purple line through the world along your best lap's path (near you only).
 - **Sectors:** the splits panel has a SECTOR column (time from the previous checkpoint): purple for the best ever, green for the best this race. After the finish the table shows sector times per lap (switchable back to lap times on the Settings tab).
+- **Racing line:** smooth curves through corners; red BRAKE / green GO markers where the best lap braked hard and sped up again (with speeds); thickness, opacity and draw distance in Settings > Ghost and racing line.
+- **Race Map after the race:** your best lap of the race (orange) over the course record from before it (purple), with red bands where your line was 25 m+ away from it.
 - **Graphs:** the results swap every 5 s (Settings > Panels, 0 = speed only) between speed round the lap (your best lap this race against the course record from before the race, shaded green where faster and red where slower) and the time gap round the lap (above the line = ahead, below = behind, scale in seconds). Lines labelled CP n mark the checkpoints, red if missed.
-- **Stats:** "Without penalties" time, missed checkpoints listed by name, and a VS BEST column in the sectors table (each sector's best this race against the course best before it).
+- **Stats:** "Without penalties" time and a VS BEST column in the sectors table (each sector's best this race against the course best before it).
 
 **Race stats:** after the finish the splits panel adds G MAX, G AVG, BRAKE and DIST rows per lap, and a separate RACE STATS box in the top corner (Settings > Panels > Race stats) (ship, vs ship best, distance, max/avg turn G, max braking, time near top speed, average lap, consistency).
 
@@ -244,3 +256,5 @@ SE2 has a built-in plugin loader (`Keen.VRage.Core.Plugins.PluginHost`).
 - **Gate is shared across worlds**: the world-load patch didn't fire. The plugin falls back to a single "default" world and still works.
 
 **Game options followed:** speeds (results, splits, records, crash messages) use the speed unit set in the game's Options > Interface (m/s, km/h or mph); the crash settings stay in m/s. The race panels' background uses the game's UI background opacity unless you turn off Settings > HUD > Panel darkness: use the game's.
+- **Roll indicator**, **reset teleport exit speed**, automatic start spot (10 m before where you last crossed the start), target based gyro reset on teleport, minimap lap replay after a race and a lap picker on the Race Map.
+- **Race spotlight** (Race tab): export a finished race to a file, then in any world pick the file, click the ship and a panel cycles through the race's results, its stats and the ship's stats.

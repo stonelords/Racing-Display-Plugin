@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 namespace RaceDisplay.Core
 {
     public enum GateKey
@@ -18,6 +19,8 @@ namespace RaceDisplay.Core
         PlacementMode,        // default Shift+T: edit mode places on a grid / by picking blocks / in the air
         EditLine,             // default Shift+L: show or hide the best lap line while editing
         MoveCheckpoint,       // default Shift+M: aim at a checkpoint, then left click its new place (keeps its number)
+        ResultsPrevLap,       // default Shift+[: the results graphs and map show the lap before
+        ResultsNextLap,       // default Shift+]: ... the next lap
         SetStartSpot,         // default Ctrl+T: the reset race teleport goes to where your seat is now
     }
 
@@ -73,6 +76,21 @@ namespace RaceDisplay.Core
         RaceGhostFile,     // Text = file path
         DeleteGhostFile,   // Text = file path
         RaceCourseBest,
+        RaceShipLast,      // Text = ship name: race against the last lap flown in that ship
+        WatchShipLast,     // Text = ship name: replay the last lap flown in that ship
+        ShipAnalyser,      // enter ship analyser mode (Esc leaves it)
+        SetRpiValue,       // RPI designer: text = block name, value = its RPI (in the class in use)
+        SetRpiBudget, SetRpiMinWeight,
+        RpiNewClass, RpiSelectClass, RpiRenameClass, RpiDeleteClass,   // text = class name
+        RpiExport, RpiImport, RpiOpenFolder,                           // import: text = file path
+        SpotlightExport, SpotlightStart, SpotlightStop, SpotlightOpenFolder,   // race spotlight (start: text = file path)
+        ResultsLapPrev, ResultsLapNext,   // Race Map: the results' lap shown (and replayed)
+        RpiDuplicateClass,   // text = the copy's name (empty = "<name> copy")
+        RpiImportText,       // text = a class as JSON (pasted)
+        SetRpiLimit,         // text = block name, value = most per ship (0 = banned, -1 = no limit)
+        RpiAddStep,          // value = weight in kg, text = budget at that weight
+        RpiRemoveStep,       // value = weight in kg
+        RacePossible,      // the ghost, racing line and live gap follow the possible lap (best sectors joined up)
         OpenGhostFolder,
         RefreshGhosts,
         SavePreset,        // Text = name: all Settings-tab values under that name
@@ -102,6 +120,34 @@ namespace RaceDisplay.Core
     }
 
     /// <summary>A grid's oriented bounding box in world space.</summary>
+    /// <summary>Ship analyser: a grid's stats (worked out from its blocks).</summary>
+    public sealed class ShipStats
+    {
+        public string Name;
+        public int Blocks, Pcu, Thrusters, Gyros, Inventories;
+        public double Mass;                  // kg
+        public double SizeX, SizeY, SizeZ;   // m (width, height, length)
+        /// <summary>Max thrust (N) pushing the grid each way: forward, backward, left, right, up, down (the grid's own axes).</summary>
+        public readonly double[] Thrust = new double[6];
+        public double GyroTorque;            // N m, all gyroscopes together
+        public double StorageMax, StorageUsed;   // kg the inventories can hold / hold now
+        /// <summary>Most each kind of resource the grid's producers can give (by resource name), e.g. power.</summary>
+        public readonly Dictionary<string, double> Output = new Dictionary<string, double>();
+        public readonly Dictionary<string, string> OutputUnits = new Dictionary<string, string>();
+        /// <summary>Batteries and tanks, by resource: held now, most they can hold, how many, and the unit.</summary>
+        public readonly Dictionary<string, double> StoredNow = new Dictionary<string, double>(), StoredMax = new Dictionary<string, double>();
+        public readonly Dictionary<string, int> Containers = new Dictionary<string, int>();
+        public readonly Dictionary<string, string> StoreUnits = new Dictionary<string, string>();
+        /// <summary>How many of each block type (by the game's internal block name), and each type's kind, size in metres and name as shown in game.</summary>
+        public readonly Dictionary<string, int> BlockCounts = new Dictionary<string, int>();
+        public readonly Dictionary<string, (string Kind, double Size, string Name)> BlockInfo = new Dictionary<string, (string, double, string)>();
+        public bool FromServer;              // parts read from the server's copy of the grid
+        /// <summary>Where it is: centre of mass, and the grid's forward, up and right in the world.</summary>
+        public Vec3D CenterOfMass, Forward, Up, Right, BoxCenter;
+        public double ComOffset;             // m from the middle of its box
+        public object Grid;                  // the game's grid (to analyse again / draw on)
+    }
+
     public struct GridBox
     {
         public string Name;
@@ -179,6 +225,22 @@ namespace RaceDisplay.Core
 
         /// <summary>Asks the game to stop the ship you're flying.</summary>
         void StopShip();
+        /// <summary>Gives the ship this velocity (m/s, world). False if it can't be done here (not the host).</summary>
+        bool SetShipVelocity(Vec3D velocity);
+        /// <summary>Turns target based gyro off on the ship's cockpits that have it on, and remembers them; then back on.</summary>
+        int TargetGyroOff();
+        void TargetGyroRestore();
+        /// <summary>Which way gravity pulls the ship (unit vector). False in free space.</summary>
+        bool TryGetGravity(out Vec3D down);
+
+        /// <summary>Ship analyser: the grid the ray hits first (null = none); with includeOwn, the ship you're in can be picked too.</summary>
+        object LookedAtGrid(Vec3D origin, Vec3D direction, double maxDistance, bool includeOwn);
+
+        /// <summary>The ship you're flying (null on foot).</summary>
+        object OwnGrid { get; }
+
+        /// <summary>Ship analyser: a grid's stats, or null if it's gone.</summary>
+        ShipStats AnalyseGrid(object grid);
 
         /// <summary>Your seat's position and facing (forward, up) while flying a ship. False on foot.</summary>
         bool TryGetSeatPose(out Vec3D position, out Vec3D forward, out Vec3D up);

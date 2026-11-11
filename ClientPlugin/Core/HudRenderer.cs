@@ -62,6 +62,8 @@ namespace RaceDisplay.Core
                 SwapSides = settings.SwapSides,
                 TimerInCorner = settings.TimerInCorner,
                 HideGameHud = settings.RaceHudOnly,
+                KeepGyro = settings.KeepGyro,
+                GyroTargetBased = settings.GyroTargetBased,
             };
 
             if (timer.Gate == null) return model;

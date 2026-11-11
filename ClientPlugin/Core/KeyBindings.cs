@@ -47,6 +47,8 @@ namespace RaceDisplay.Core
             (GateKey.SetStartSpot, "Set start spot here"),
             (GateKey.LapCount, "Race setup (laps, ghost)"),
             (GateKey.ResultsMode, "Results: overall / this ship"),
+            (GateKey.ResultsPrevLap, "Results: previous lap"),
+            (GateKey.ResultsNextLap, "Results: next lap"),
             (GateKey.ToggleMarkers, "Markers on/off"),
             // Replay
             (GateKey.Replay, "Watch best-lap replay"),
@@ -111,6 +113,8 @@ namespace RaceDisplay.Core
                 case GateKey.ToggleMarkers: return new KeyBinding(VK_N, ctrl: true);
                 case GateKey.Replay: return new KeyBinding(VK_L, ctrl: true, shift: true);
                 case GateKey.ResultsMode: return new KeyBinding(VK_B, ctrl: true);
+                case GateKey.ResultsPrevLap: return new KeyBinding(0xDB /* [ */, shift: true);
+                case GateKey.ResultsNextLap: return new KeyBinding(0xDD /* ] */, shift: true);
                 case GateKey.ReplayCamera: return new KeyBinding(0x43 /* C */, ctrl: true, shift: true);
                 case GateKey.EditMode: return new KeyBinding(0x46 /* F */, ctrl: true);
                 case GateKey.EditWheel: return new KeyBinding(VK_R, shift: true); // Shift+R (held); only does anything in course edit mode

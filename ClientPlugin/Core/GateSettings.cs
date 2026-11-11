@@ -56,6 +56,10 @@ namespace RaceDisplay.Core
         public double CrashMinSpeed { get; set; } = 20.0;
         /// <summary>How hard the stop must be (m/s²). Lower = more sensitive. 20 is about 2 g.</summary>
         public double CrashDeceleration { get; set; } = 20.0;
+        /// <summary>How crashes are found: 0 = hull damage (falls back to speed drop until damage has been seen), 1 = speed drop, 2 = either.</summary>
+        public int CrashDetection { get; set; }
+        /// <summary>Damage mode: collision damage needed in one hit (all blocks together) to count as a crash. 0 = any.</summary>
+        public double CrashMinDamage { get; set; }
         /// <summary>Minimum speed lost in the impact (m/s), so small scrapes don't count.</summary>
         public double CrashMinSpeedLoss { get; set; } = 8.0;
         /// <summary>The impact must also take away at least this share of your speed (0.25 = 25%).</summary>
@@ -86,6 +90,8 @@ namespace RaceDisplay.Core
             public Dictionary<string, ShipRecord> Ships { get; set; } = new Dictionary<string, ShipRecord>();
             /// <summary>Best total race time, keyed by number of laps.</summary>
             public Dictionary<int, double> BestRace { get; set; } = new Dictionary<int, double>();
+            /// <summary>Path of each best sector (index as <see cref="BestSectors"/>), times from the sector's start: joined up they make the possible lap.</summary>
+            public List<List<double[]>> BestSectorTraces { get; set; }
         }
 
         /// <summary>How long the results panel stays up after the finish before fading out (seconds).</summary>
@@ -122,6 +128,12 @@ namespace RaceDisplay.Core
         public bool SectorColours { get; set; } = true;
         /// <summary>Racing line colours: 0 = plain magenta, 1 = by speed (red slow, yellow, green fast), 2 = braking / accelerating.</summary>
         public int RacingLineColourMode { get; set; } = 1;
+        /// <summary>Racing line thickness (1 = normal), opacity (%) and how far from you it's drawn (m).</summary>
+        public double RacingLineWidth { get; set; } = 1.0;
+        public double RacingLineOpacity { get; set; } = 100;
+        public double RacingLineDistance { get; set; } = 2000;
+        /// <summary>Markers on the racing line where the best lap started braking hard (BRAKE) and sped up again (GO).</summary>
+        public bool BrakeMarkers { get; set; }
         /// <summary>A small top-down map of the course in a corner of the HUD.</summary>
         public bool ShowMinimap { get; set; } = true;
         /// <summary>Minimap size (pixels at 100 % HUD size).</summary>
@@ -210,6 +222,73 @@ namespace RaceDisplay.Core
 
         /// <summary>Race HUD only: the game's own HUD (flight, toolbar, character, hints) is hidden; the race HUD stays.</summary>
         public bool RaceHudOnly { get; set; }
+        /// <summary>RPI (race performance index) classes made in the RPI designer, and the one in use.</summary>
+        public List<RpiClass> RpiClasses { get; set; } = new List<RpiClass>();
+        public string RpiClassName { get; set; }
+        public sealed class RpiClass
+        {
+            public string Name { get; set; }
+            /// <summary>The most RPI a ship may use, and the least it may weigh in kg (0 = no limit).</summary>
+            public double Budget { get; set; }
+            public double MinWeight { get; set; }
+            /// <summary>RPI for each block of a type (by the game's internal block name).</summary>
+            public Dictionary<string, double> Values { get; set; } = new Dictionary<string, double>();
+            /// <summary>The most of a block type a ship may have (0 = banned). Not listed = no limit.</summary>
+            public Dictionary<string, int> Limits { get; set; } = new Dictionary<string, int>();
+            /// <summary>Lighter ships with a smaller budget: a ship under MinWeight uses the heaviest step it reaches.</summary>
+            public List<RpiStep> Steps { get; set; } = new List<RpiStep>();
+        }
+        public sealed class RpiStep
+        {
+            public double Weight { get; set; }
+            public double Budget { get; set; }
+        }
+
+        /// <summary>The budget a ship of this mass gets, and the least any ship may weigh, for a class with weight steps.</summary>
+        public static double RpiBudgetFor(double mass, double mainWeight, double mainBudget, IEnumerable<(double Weight, double Budget)> steps)
+        {
+            if (mainWeight <= 0 || mass >= mainWeight) return mainBudget;
+            double reached = -1, budget = mainBudget, lowest = mainWeight, lowestBudget = mainBudget;
+            foreach (var step in steps)
+            {
+                if (step.Weight <= mass && step.Weight > reached) { reached = step.Weight; budget = step.Budget; }
+                if (step.Weight < lowest) { lowest = step.Weight; lowestBudget = step.Budget; }
+            }
+            return reached >= 0 ? budget : lowestBudget;   // (under every step: the lightest step's budget, and under weight)
+        }
+        public static double RpiLowestWeight(double mainWeight, IEnumerable<(double Weight, double Budget)> steps)
+        {
+            double lowest = mainWeight;
+            if (mainWeight > 0) foreach (var step in steps) if (step.Weight > 0 && step.Weight < lowest) lowest = step.Weight;
+            return lowest;
+        }
+        /// <summary>(Old: one set of values before classes. Turned into a class when loaded.)</summary>
+        public Dictionary<string, double> RpiValues { get; set; }
+        public double RpiBudget { get; set; }
+        public double RpiMinWeight { get; set; }
+        /// <summary>Race speedometer: 0 = off, 1 = with Race HUD only, 2 = always.</summary>
+        public int Speedometer { get; set; } = 1;
+        /// <summary>Top of the speedometer dial, in the game's speed unit. 0 = automatic (grows to suit the ship).</summary>
+        public double SpeedometerMax { get; set; }
+        /// <summary>With Race HUD only, keep the game's flight gyro showing; and switch it to target based.</summary>
+        public bool KeepGyro { get; set; } = true;
+        public bool GyroTargetBased { get; set; }
+        /// <summary>Flight keys (Q W E A S D C Space) lighting up as you press them, bottom right: 0 = off, anything else = on.</summary>
+        public int FlightKeys { get; set; } = 2;
+        /// <summary>(Flight keys became on by default: turned on once for settings saved before that.)</summary>
+        public bool FlightKeysOnByDefault { get; set; }
+        /// <summary>Roll indicator: how far the ship is rolled from level (in gravity).</summary>
+        public bool RollIndicator { get; set; } = true;
+        /// <summary>Pitch indicator: how far the nose is above or below the horizon (in gravity).</summary>
+        public bool PitchIndicator { get; set; } = true;
+        /// <summary>(The roll indicator became on by default: turned on once for settings saved before that.)</summary>
+        public bool RollOnByDefault { get; set; }
+        /// <summary>Reset race teleport: the speed (m/s) the ship comes out of it with, along the way it faces (0 = stopped).</summary>
+        public double ResetExitSpeed { get; set; }
+        /// <summary>After the race, the minimap plays the laps back one after another.</summary>
+        public bool MinimapLapReplay { get; set; } = true;
+        /// <summary>A marker ahead of the ship where it's heading (its velocity), not where it's pointing.</summary>
+        public bool VelocityMarker { get; set; } = true;
 
         /// <summary>How many laps the lap list shows before scrolling.</summary>
         public int MaxLapRows { get; set; } = 10;
@@ -296,6 +375,13 @@ namespace RaceDisplay.Core
             public List<double[]> BestLapTrace { get; set; }
             public List<double[]> BestLapShip { get; set; }
             public List<double?> BestLapSplits { get; set; }
+            /// <summary>The last lap raced in this ship (time, path, shape, speed, checkpoint times), to race or watch again.</summary>
+            public double? LastLap { get; set; }
+            public List<double[]> LastLapTrace { get; set; }
+            public List<double[]> LastLapShip { get; set; }
+            public List<double[]> LastLapSpeed { get; set; }
+            public List<double?> LastLapSplits { get; set; }
+            public DateTime LastLapDate { get; set; }
         }
 
         public sealed class RaceEntry
@@ -364,6 +450,22 @@ namespace RaceDisplay.Core
             s.CourseStartSpot = null;
             // Bindings for keys that no longer exist.
             s.KeyBindings ??= new Dictionary<string, KeyBinding>();
+            if (!s.FlightKeysOnByDefault) { s.FlightKeysOnByDefault = true; s.FlightKeys = 2; }
+            if (!s.RollOnByDefault) { s.RollOnByDefault = true; s.RollIndicator = true; }
+            s.RpiClasses ??= new List<RpiClass>();
+            s.RpiClasses.RemoveAll(rc => rc == null || string.IsNullOrWhiteSpace(rc.Name));
+            foreach (var rc in s.RpiClasses)
+            {
+                rc.Values ??= new Dictionary<string, double>();
+                rc.Limits ??= new Dictionary<string, int>();
+                rc.Steps ??= new List<RpiStep>();
+            }
+            if (s.RpiValues != null && s.RpiValues.Count > 0 && s.RpiClasses.Count == 0)
+            {
+                s.RpiClasses.Add(new RpiClass { Name = "My class", Budget = s.RpiBudget, MinWeight = s.RpiMinWeight, Values = s.RpiValues });
+                s.RpiClassName = "My class";
+            }
+            s.RpiValues = null;
             foreach (var name in new List<string>(s.KeyBindings.Keys))
                 if (!Enum.TryParse<GateKey>(name, out _)) s.KeyBindings.Remove(name);
             return s;

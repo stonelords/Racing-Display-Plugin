@@ -21,7 +21,7 @@ namespace RaceDisplay
     internal static class TerminalTab
     {
         private const string CategoryName = "RacingDisplay";
-        internal static readonly string[] Pages = { "Race", "Records", "Courses", "Settings", "Controls" };
+        internal static readonly string[] Pages = { "Race", "Records", "Courses", "RPI", "Settings", "Controls" };
 
         /// <summary>Our tabs and their plain titles (the game would look the title up as a text key).</summary>
         private static readonly ConditionalWeakTable<object, string> titles = new ConditionalWeakTable<object, string>();

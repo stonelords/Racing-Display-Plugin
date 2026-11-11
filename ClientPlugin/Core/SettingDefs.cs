@@ -49,6 +49,13 @@ namespace RaceDisplay.Core
             },
             new SettingDef
             {
+                DependsOn = "Reset race teleports to the start",
+                Section = "Race", Name = "Reset teleport exit speed (m/s, 0 = stopped)", Min = 0, Max = 300, Step = 5,
+                Description = "The speed your ship has when it comes out of the reset race teleport, along the way it's facing: for a rolling start without flying back round. 0 = stopped (needed for Countdown start). Works in single player and when you host; on someone else's server the ship just stops.",
+                Get = s => s.ResetExitSpeed, Set = (s, v) => s.ResetExitSpeed = v,
+            },
+            new SettingDef
+            {
                 Section = "Race", Name = "Countdown start", Toggle = true,
                 Description = "Stop near the start gate and hold still to get a 3-2-1-GO countdown. Off: no countdown, the race just starts when you fly through the gate.",
                 Get = s => B(s.CountdownEnabled), Set = (s, v) => s.CountdownEnabled = v >= 0.5,
@@ -116,6 +123,57 @@ namespace RaceDisplay.Core
                 Section = "HUD", Name = "Race HUD only", Toggle = true,
                 Description = "Hide the game's own HUD (speed and altitude, toolbar, character status, hints, notifications) and show only the race HUD. Also a step in the game's HUD key (U): full, minimal, race HUD only, none.",
                 Get = s => B(s.RaceHudOnly), Set = (s, v) => s.RaceHudOnly = v >= 0.5,
+            },
+            new SettingDef
+            {
+                DependsOn = "Race HUD only",
+                Section = "HUD", Name = "Race HUD only: keep the gyro", Toggle = true,
+                Description = "Keeps the game's flight gyro (the ring in the middle of the screen with the pitch angle) showing when Race HUD only hides the rest of the game's HUD.",
+                Get = s => B(s.KeepGyro), Set = (s, v) => s.KeepGyro = v >= 0.5,
+            },
+            new SettingDef
+            {
+                DependsOn = "Race HUD only: keep the gyro",
+                Section = "HUD", Name = "Gyro: target based", Toggle = true,
+                Description = "Switches the game's gyro to its target based mode while the race HUD is showing. Off leaves the gyro the way the game has it.",
+                Get = s => B(s.GyroTargetBased), Set = (s, v) => s.GyroTargetBased = v >= 0.5,
+            },
+            new SettingDef
+            {
+                Section = "HUD", Name = "Speedometer", Min = 0, Max = 2, Step = 1, Choices = new[] { "Off", "With Race HUD only", "Always" },
+                Description = "A round speed dial in the bottom left corner while you fly the course, in the game's speed unit: the arc fills as you speed up (orange near the top, red in the last tenth) with the speed in big numbers in the middle. With Race HUD only: shown when the game's own speed display is hidden.",
+                Get = s => s.Speedometer, Set = (s, v) => s.Speedometer = (int)Math.Round(v),
+            },
+            new SettingDef
+            {
+                DependsOn = "Speedometer",
+                Section = "HUD", Name = "Speedometer max speed (0 = automatic)", Min = 0, Max = 5000, Step = 50,
+                Description = "The speed at the top of the speedometer dial, in the game's speed unit (km/h, m/s or mph, Options > Interface). 0 = automatic: a round number a bit above the fastest this ship has gone, growing if you go faster. Faster than the max fills the dial to the end.",
+                Get = s => s.SpeedometerMax, Set = (s, v) => s.SpeedometerMax = v,
+            },
+            new SettingDef
+            {
+                Section = "HUD", Name = "Flight keys", Toggle = true,
+                Description = "Shows Q W E, A S D, C and Space in the bottom right corner, lighting up while they're held: handy for videos and for seeing your inputs.",
+                Get = s => B(s.FlightKeys > 0), Set = (s, v) => s.FlightKeys = v >= 0.5 ? 2 : 0,
+            },
+            new SettingDef
+            {
+                Section = "HUD", Name = "Roll indicator", Toggle = true,
+                Description = "Shows how far your ship is rolled from level, in the bottom right corner (beside the flight keys): a bar that tilts with the ship, the angle in degrees (R = right wing down) and under it how fast it's rolling in degrees a second. Needs gravity to know which way is up, so it only shows on or near a planet or moon.",
+                Get = s => B(s.RollIndicator), Set = (s, v) => s.RollIndicator = v >= 0.5,
+            },
+            new SettingDef
+            {
+                Section = "HUD", Name = "Pitch indicator", Toggle = true,
+                Description = "Shows how far your ship's nose is above (UP) or below (DOWN) the horizon in degrees, in the same box as the roll indicator in the bottom right corner. Needs gravity to know which way is up, so it only shows on or near a planet or moon.",
+                Get = s => B(s.PitchIndicator), Set = (s, v) => s.PitchIndicator = v >= 0.5,
+            },
+            new SettingDef
+            {
+                Section = "HUD", Name = "Speed vector marker", Toggle = true,
+                Description = "A bright green ring with wings, outlined in black, where the ship is actually heading (its velocity), which can be well off where it's pointing when you drift through a corner.",
+                Get = s => B(s.VelocityMarker), Set = (s, v) => s.VelocityMarker = v >= 0.5,
             },
             new SettingDef
             {
@@ -242,6 +300,13 @@ namespace RaceDisplay.Core
             },
             new SettingDef
             {
+                DependsOn = "Minimap",
+                Section = "Minimap", Name = "Minimap replays the laps after a race", Toggle = true,
+                Description = "On: while the results are up, a white dot flies each lap again on the minimap, then the results move on to the next lap (best lap, lap 1, lap 2...), graphs and all. Off: the minimap just shows the lap picked with the results lap keys.",
+                Get = s => B(s.MinimapLapReplay), Set = (s, v) => s.MinimapLapReplay = v >= 0.5,
+            },
+            new SettingDef
+            {
                 DependsOn = "Minimap zooms in while moving",
                 Section = "Minimap", Name = "Minimap zoom while moving (m)", Min = 300, Max = 10000, Step = 100,
                 Description = "While you're moving, the minimap zooms in and follows you, showing this much of the course across. When you stop it zooms back out to the whole course. Set it to the top for the whole course all the time.",
@@ -279,6 +344,34 @@ namespace RaceDisplay.Core
                 Section = "Ghost and racing line", Name = "Racing line colours", Min = 0, Max = 2, Step = 1, Choices = new[] { "Plain", "Speed", "Braking" },
                 Description = "How the best lap's racing line is coloured, to see where time is won and lost. Speed: red where it was slow (braking, tight turns), through yellow, to green where it was fastest. Braking: red where it was slowing down (the harder, the redder), green where it was speeding up, white where it held its speed. Plain: magenta. (With a 2nd ghost on the lines are purple and orange.)",
                 Get = s => s.RacingLineColourMode, Set = (s, v) => s.RacingLineColourMode = (int)Math.Round(v),
+            },
+            new SettingDef
+            {
+                DependsOn = "Racing line",
+                Section = "Ghost and racing line", Name = "Racing line thickness", Min = 0.5, Max = 4, Step = 0.25, Format = "{0:0.00}x",
+                Description = "How thick the racing line is drawn. 1 = normal.",
+                Get = s => s.RacingLineWidth, Set = (s, v) => s.RacingLineWidth = v,
+            },
+            new SettingDef
+            {
+                DependsOn = "Racing line",
+                Section = "Ghost and racing line", Name = "Racing line opacity (%)", Min = 10, Max = 100, Step = 5,
+                Description = "How see-through the racing line is. 100 = solid.",
+                Get = s => s.RacingLineOpacity, Set = (s, v) => s.RacingLineOpacity = v,
+            },
+            new SettingDef
+            {
+                DependsOn = "Racing line",
+                Section = "Ghost and racing line", Name = "Racing line distance (m)", Min = 300, Max = 6000, Step = 100,
+                Description = "How far from you the racing line is drawn. Shorter keeps the view clearer; longer shows more of what's coming.",
+                Get = s => s.RacingLineDistance, Set = (s, v) => s.RacingLineDistance = v,
+            },
+            new SettingDef
+            {
+                DependsOn = "Racing line",
+                Section = "Ghost and racing line", Name = "Braking markers", Toggle = true,
+                Description = "Markers on the racing line where your best lap started braking hard (red BRAKE, with the speed it braked from) and where it was speeding up again (green GO, with the slowest speed through the corner).",
+                Get = s => B(s.BrakeMarkers), Set = (s, v) => s.BrakeMarkers = v >= 0.5,
             },
             // ---- Penalties
             new SettingDef
@@ -366,7 +459,7 @@ namespace RaceDisplay.Core
             new SettingDef
             {
                 Section = "Advanced", Name = "Crash minimum speed (m/s)", Min = 0, Max = 150, Step = 1,
-                Description = "Crashes only count when you were going at least this fast.",
+                Description = "Crashes only count when you were going at least this fast, with either crash detection (for hull damage: your top speed in the half second before the hit), so bumps while parking or lining up never cost you.",
                 Get = s => s.CrashMinSpeed, Set = (s, v) => s.CrashMinSpeed = v,
             },
             new SettingDef
@@ -374,6 +467,18 @@ namespace RaceDisplay.Core
                 Section = "Advanced", Name = "Crash hardness (m/s²)", Min = 10, Max = 150, Step = 5,
                 Description = "How sudden the stop must be to count as a crash. Lower = more sensitive. The default is 20 (about 2 g); raise it if hard braking counts as a crash.",
                 Get = s => s.CrashDeceleration, Set = (s, v) => s.CrashDeceleration = v,
+            },
+            new SettingDef
+            {
+                Section = "Penalties", Name = "Crash detection", Min = 0, Max = 2, Step = 1, Choices = new[] { "Hull damage", "Speed drop", "Either" },
+                Description = "Hull damage: a crash is when your ship's blocks take collision damage (the game's own damage), so hard braking or landing can't count and scrapes do. It needs the game's server in your game (single player or hosting); until damage has been seen it uses the speed drop instead (e.g. on a dedicated server). Speed drop: a sudden loss of speed (penalty hardness). Either: both count.",
+                Get = s => s.CrashDetection, Set = (s, v) => s.CrashDetection = (int)Math.Round(v),
+            },
+            new SettingDef
+            {
+                Section = "Penalties", Name = "Crash damage needed", Min = 0, Max = 500, Step = 5,
+                Description = "With Hull damage: how much collision damage one hit must do (all blocks together) to count as a crash. 0 = any damage. The log (RaceDisplay.log) shows the damage of the first few hits, to help pick a value.",
+                Get = s => s.CrashMinDamage, Set = (s, v) => s.CrashMinDamage = v,
             },
             new SettingDef
             {

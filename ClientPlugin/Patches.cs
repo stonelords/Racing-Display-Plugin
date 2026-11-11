@@ -4,6 +4,9 @@ using HarmonyLib;
 using Keen.Game2.Client.GameSystems.PlayerControl;
 using Keen.Game2.Game.SessionComponents;
 using Keen.VRage.Core;
+using Keen.VRage.Core.Game.Components;
+using Keen.VRage.Core.Game.Data;
+using Keen.VRage.DCS.Components;
 
 namespace RaceDisplay
 {
@@ -140,6 +143,12 @@ namespace RaceDisplay
             Patch(harmony, saveComp == null ? null : AccessTools.Method(saveComp, "NotifyClientSaveCompletedAsync"), nameof(WorldSaveCompletedPostfix), "SaveSessionComponent.NotifyClientSaveCompletedAsync (world saved)");
             Patch(harmony, vmType == null ? null : AccessTools.Method(vmType, "SaveGameInternal"), nameof(WorldSavePostfix), "InGameMenuScreenViewModel.SaveGameInternal (save from the menu)");
 
+            // Collision damage to a ship (runs where the game's server runs: single player or hosting).
+            var impact = AccessTools.TypeByName("Keen.Game2.Simulation.WorldObjects.CubeGrids.Physicss.GridImpactDamageReceiverComponent");
+            var damageBlock = impact == null ? null : AccessTools.Method(impact, "DamageBlock");
+            impactGridField = impact == null ? null : AccessTools.Field(impact, "_grid");
+            Patch(harmony, damageBlock, nameof(ImpactDamagePostfix), "GridImpactDamageReceiverComponent.DamageBlock (crash damage)");
+
             // Esc during a replay ends the replay instead of opening the pause menu.
             var inGameUiSession = AccessTools.TypeByName("Keen.Game2.Client.UI.InGame.SessionInGameUISessionComponent");
             var createMenu = inGameUiSession == null ? null : AccessTools.Method(inGameUiSession, "CreateInGameMenuScreen");
@@ -253,6 +262,33 @@ namespace RaceDisplay
             catch (Exception e)
             {
                 PluginLog.Error($"Failed to patch {label}", e);
+            }
+        }
+
+        // ---- Crash damage: where a ship's block took collision damage, and how much (read by the race each frame).
+        internal static readonly System.Collections.Concurrent.ConcurrentQueue<(double X, double Y, double Z, float Damage)> ImpactDamage
+            = new System.Collections.Concurrent.ConcurrentQueue<(double, double, double, float)>();
+        /// <summary>The damage hook has seen collision damage at least once (so it works here).</summary>
+        internal static volatile bool ImpactDamageSeen;
+        private static System.Reflection.FieldInfo impactGridField;
+        private static int impactLogs;
+
+        private static void ImpactDamagePostfix(object __instance, object[] __args)
+        {
+            try
+            {
+                float damage = __args != null && __args.Length > 2 && __args[2] is float f ? f : 0;
+                var grid = impactGridField?.GetValue(__instance) as Keen.VRage.DCS.Components.Component;
+                var entity = grid?.Entity;
+                if (entity == null || !entity.Data.Has<WorldTransform>()) return;
+                var p = Keen.VRage.Core.Game.Data.EntityTransformFunctions.GetWorldTransform(entity.Data).Position;
+                ImpactDamageSeen = true;
+                if (ImpactDamage.Count < 512) ImpactDamage.Enqueue((p.X, p.Y, p.Z, damage));
+                if (impactLogs < 5) { impactLogs++; PluginLog.Info($"Crash damage seen: {damage:0.##} to a ship at ({p.X:0}, {p.Y:0}, {p.Z:0})"); }
+            }
+            catch (Exception e)
+            {
+                if (impactLogs < 5) { impactLogs++; PluginLog.Error("Crash damage hook failed", e); }
             }
         }
 

@@ -56,7 +56,9 @@ namespace RaceDisplay
         private Canvas graphCanvas;
         private TextBlock graphTitle;
         private HudModel.ResultsPanel graphFor;
-        private int graphPage;
+        private int graphPage, graphVersion;
+        private Canvas vectorMark;
+        private readonly List<TextBlock> mmCrashes = new List<TextBlock>();
         private Canvas markerLayer;
         private readonly System.Collections.Generic.List<(Border Box, TextBlock Text, TextBlock Sub)> markerPool =
             new System.Collections.Generic.List<(Border, TextBlock, TextBlock)>();
@@ -99,7 +101,7 @@ namespace RaceDisplay
         private Border centreBox;
         private Panel raceDrop;                  // race messages: a tab that drops down under the timer
         private Avalonia.Controls.Shapes.Path raceFill;
-        private double raceDropHeight, raceTextInset, raceScale = 1;
+        private double raceDropHeight, raceScale = 1;
         private Grid raceTab;
         private TextBlock raceText, centreText;
 
@@ -334,7 +336,6 @@ namespace RaceDisplay
             // A long message wraps onto a second line and the tab gets taller; it's never wider than the timer.
             raceText.TextWrapping = TextWrapping.Wrap;
             raceText.TextAlignment = TextAlignment.Center;
-            raceTextInset = raceDropHeight * 0.9;
             raceScale = s;
             raceText.Margin = new Thickness(0, 4 * s, 0, 6 * s);
             raceTab.Children.Add(raceFill);
@@ -440,6 +441,10 @@ namespace RaceDisplay
             resultsTitle.HorizontalAlignment = HorizontalAlignment.Center;
             resultsHeadline = Label(26 * s, Brush(HudColor.Yellow), FontWeight.Bold);
             resultsHeadline.HorizontalAlignment = HorizontalAlignment.Center;
+            // A long headline goes onto a second line rather than being cut off with "...".
+            resultsHeadline.TextTrimming = TextTrimming.None;
+            resultsHeadline.TextWrapping = TextWrapping.Wrap;
+            resultsHeadline.TextAlignment = TextAlignment.Center;
             resultLines = new StackPanel { Spacing = 4 * s };
             resultsBox = Box(s);
             // Results sit under the lap list (out of the way of the crosshair and the ship).
@@ -535,9 +540,108 @@ namespace RaceDisplay
             Grid.SetRowSpan(cornerFit, 3);
             root.Children.Add(cornerFit);
             placedKey = null; mapRow = null; bestStack = null; splitsRow = null;
+            // ---- speedometer: a round dial in the bottom left corner (arc that fills with speed, big number in the middle)
+            dialSize = 240 * s;
+            dialStatic = new Canvas { Width = dialSize, Height = dialSize };
+            dialArc = new Path { StrokeThickness = 11 * s, StrokeLineCap = PenLineCap.Flat };
+            dialTip = new Line { StrokeThickness = 3 * s, Stroke = White, StrokeLineCap = PenLineCap.Round };
+            speedoValue = Label(52 * s, White, FontWeight.Bold);
+            speedoValue.HorizontalAlignment = HorizontalAlignment.Center;
+            speedoUnit = Label(14 * s, Grey);
+            speedoUnit.HorizontalAlignment = HorizontalAlignment.Center;
+            var dialText = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 10 * s, 0, 0),
+                Children = { speedoValue, speedoUnit },
+            };
+            var dial = new Grid { Width = dialSize, Height = dialSize };
+            dial.Children.Add(dialStatic);
+            dial.Children.Add(new Canvas { Width = dialSize, Height = dialSize, Children = { dialArc, dialTip } });
+            dial.Children.Add(dialText);
+            speedoBox = new Border { Child = dial };
+            speedoBox.HorizontalAlignment = HorizontalAlignment.Left;
+            speedoBox.VerticalAlignment = VerticalAlignment.Bottom;
+            speedoBox.Margin = new Thickness(30 * s, 0, 0, 40 * s);
+            speedoBox.IsVisible = false;
+            Grid.SetRowSpan(speedoBox, 3);
+            dialFor = -1;
+
+            // ---- flight keys, bottom corner: Q W E / A S D / C Space
+            keyCells.Clear();
+            var keyGrid = new Grid();
+            for (int c = 0; c < 3; c++) keyGrid.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(40 * s, GridUnitType.Pixel)));
+            for (int r = 0; r < 3; r++) keyGrid.RowDefinitions.Add(new RowDefinition(new GridLength(40 * s, GridUnitType.Pixel)));
+            string[] keyNames = { "Q", "W", "E", "A", "S", "D", "C", "SPACE" };
+            (int Row, int Col, int Span)[] keyPlaces = { (0, 0, 1), (0, 1, 1), (0, 2, 1), (1, 0, 1), (1, 1, 1), (1, 2, 1), (2, 0, 1), (2, 1, 2) };
+            for (int k = 0; k < keyNames.Length; k++)
+            {
+                var cell = new Border
+                {
+                    BorderBrush = BorderBrush, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4 * s),
+                    Margin = new Thickness(2 * s),
+                    Child = new TextBlock { Text = keyNames[k], FontSize = (k == 7 ? 12 : 16) * s, FontWeight = FontWeight.Bold, Foreground = White,
+                        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+                };
+                Grid.SetRow(cell, keyPlaces[k].Row); Grid.SetColumn(cell, keyPlaces[k].Col); Grid.SetColumnSpan(cell, keyPlaces[k].Span);
+                keyGrid.Children.Add(cell);
+                keyCells.Add(cell);
+            }
+            keysBox = new Border { Child = keyGrid, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(30 * s, 0, 30 * s, 40 * s), IsVisible = false };
+            Grid.SetRowSpan(keysBox, 3);
+            // Roll indicator: a bar that tilts with the ship over a level line, and the angle.
+            var rollCanvas = new Canvas { Width = 120 * s, Height = 64 * s };
+            rollCanvas.Children.Add(new Line { StartPoint = new Point(6 * s, 32 * s), EndPoint = new Point(22 * s, 32 * s), Stroke = Brush(200, 235, 238, 240), StrokeThickness = 2 * s });
+            rollCanvas.Children.Add(new Line { StartPoint = new Point(98 * s, 32 * s), EndPoint = new Point(114 * s, 32 * s), Stroke = Brush(200, 235, 238, 240), StrokeThickness = 2 * s });
+            rollBarBack = new Line { Stroke = Brush(200, 0, 0, 0), StrokeThickness = 7 * s, StrokeLineCap = PenLineCap.Round };
+            rollBar = new Line { Stroke = Brush(255, 90, 210, 240), StrokeThickness = 4 * s, StrokeLineCap = PenLineCap.Round };
+            rollFin = new Line { Stroke = Brush(255, 90, 210, 240), StrokeThickness = 3 * s, StrokeLineCap = PenLineCap.Round };
+            rollCanvas.Children.Add(rollBarBack);
+            rollCanvas.Children.Add(rollBar);
+            rollCanvas.Children.Add(rollFin);
+            rollText = Label(15 * s, White, FontWeight.Bold);
+            rollText.HorizontalAlignment = HorizontalAlignment.Center;
+            rollBox = Box(s);
+            rollBox.Padding = new Thickness(6 * s, 2 * s, 6 * s, 4 * s);
+            rollText.TextAlignment = TextAlignment.Center;
+            pitchText = Label(15 * s, White, FontWeight.Bold);
+            pitchText.HorizontalAlignment = HorizontalAlignment.Center;
+            rollCanvasBox = rollCanvas;
+            pitchShown = double.NaN;
+            rollBox.Child = new StackPanel { Children = { rollCanvas, rollText, pitchText } };
+            rollBox.HorizontalAlignment = HorizontalAlignment.Right;
+            rollBox.VerticalAlignment = VerticalAlignment.Bottom;
+            rollBox.IsVisible = false;
+            rollShown = double.NaN;
+            Grid.SetRowSpan(rollBox, 3);
+
+            // ---- ship analyser: a panel on the right, middle of the screen
+            analyserGrid = new Grid();
+            analyserTitle = Label(17 * s, White, FontWeight.Bold);
+            analyserHint = Label(13 * s, Grey);
+            analyserHint.TextWrapping = TextWrapping.Wrap;
+            analyserBox = Box(s);
+            // (Shrinks to fit the screen when a ship has a lot of rows.)
+            analyserBox.Child = new Viewbox
+            {
+                Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly,
+                Child = new StackPanel { Spacing = 6 * s, Children = { analyserTitle, analyserGrid, analyserHint } },
+            };
+            analyserBox.HorizontalAlignment = HorizontalAlignment.Right;
+            analyserBox.VerticalAlignment = VerticalAlignment.Center;
+            analyserBox.Margin = new Thickness(0, 20 * s, 30 * s, 20 * s);
+            analyserBox.MaxWidth = 640 * s;
+            analyserBox.IsVisible = false;
+            Grid.SetRowSpan(analyserBox, 3);
+            analyserFor = null;
+            root.Children.Add(analyserBox);
+            root.Children.Add(speedoBox);
+            root.Children.Add(keysBox);
+            root.Children.Add(rollBox);
             root.Children.Add(centreBox);
             root.Children.Add(countdownText);
             markerPool.Clear();
+            vectorMark = null;
             graphFor = null;
 
             lastSignature = null;
@@ -712,6 +816,7 @@ namespace RaceDisplay
             mmPoints.Clear();
             mmLabels.Clear();
             mmGhosts.Clear();
+            mmCrashes.Clear();
             mmSectorBands.Clear();
             mmSectorTagPool.Clear();
             mmDrawn = mmLabelsSig = null;
@@ -1038,6 +1143,23 @@ namespace RaceDisplay
                 Canvas.SetLeft(e, at.X - 5 * s);
                 Canvas.SetTop(e, at.Y - 5 * s);
             }
+            // After the race: red X where you crashed on the lap shown.
+            while (mmCrashes.Count < mm.Crashes.Count)
+            {
+                var x = new TextBlock { Text = "X", FontSize = 13 * s, FontWeight = FontWeight.Bold, Foreground = Brush(HudColor.Red), ZIndex = 49 };
+                mmCrashes.Add(x);
+                minimapCanvas.Children.Add(x);
+            }
+            for (int i = 0; i < mmCrashes.Count; i++)
+            {
+                var x = mmCrashes[i];
+                x.IsVisible = i < mm.Crashes.Count;
+                if (!x.IsVisible) continue;
+                var at = T(mm.Crashes[i].X, mm.Crashes[i].Y);
+                if (!InCircle(at.X, at.Y, 5 * s)) { x.IsVisible = false; continue; }
+                Canvas.SetLeft(x, at.X - 4.5 * s);
+                Canvas.SetTop(x, at.Y - 9 * s);
+            }
             mmPlayer.IsVisible = mm.PlayerX.HasValue && opt.You;
             Point? me = null;
             if (mm.PlayerX.HasValue)
@@ -1081,7 +1203,81 @@ namespace RaceDisplay
 
         // ---- race HUD only: hide the game's own HUD screens (Keen.Game2.Client.UI.HUD.*) while it's on
 
-        private bool hideGameHud;
+        private bool hideGameHud, keepGyro, gyroTargetBased;
+        private Border speedoBox, keysBox, analyserBox, rollBox;
+        private Line rollBar, rollBarBack, rollFin;
+        private TextBlock rollText, pitchText;
+        private Canvas rollCanvasBox;
+        private double pitchShown = double.NaN;
+        private double rollShown = double.NaN, rollRateShown = double.NaN;
+        private Grid analyserGrid;
+        private TextBlock analyserTitle, analyserHint;
+        private string analyserFor;
+        private TextBlock speedoValue, speedoUnit;
+        private Canvas dialStatic;
+        private Path dialArc;
+        private Line dialTip;
+        private double dialSize, dialFor = -1;
+        private IBrush dialFill;
+
+        private const double DialStart = 135, DialSweep = 270;   // degrees, clockwise from pointing right (y is down)
+
+        private Point DialPoint(double deg, double r)
+        {
+            double a = deg * Math.PI / 180, c = dialSize / 2;
+            return new Point(c + r * Math.Cos(a), c + r * Math.Sin(a));
+        }
+
+        private StreamGeometry DialArc(double fromDeg, double toDeg, double r)
+        {
+            var g = new StreamGeometry();
+            using (var ctx = g.Open())
+            {
+                ctx.BeginFigure(DialPoint(fromDeg, r), false);
+                ctx.ArcTo(DialPoint(toDeg, r), new Size(r, r), 0, toDeg - fromDeg > 180, SweepDirection.Clockwise);
+                ctx.EndFigure(false);
+            }
+            return g;
+        }
+
+        /// <summary>The dial's fixed parts for a top speed: backing disc, track, red zone, ticks and numbers.</summary>
+        private void BuildDial(double max, double s, IBrush fill)
+        {
+            dialFor = max;
+            dialFill = fill;
+            dialStatic.Children.Clear();
+            double c = dialSize / 2, r = c - 14 * s;
+            dialStatic.Children.Add(new Ellipse { Width = dialSize, Height = dialSize, Fill = fill, Stroke = BorderBrush, StrokeThickness = 1 });
+            dialStatic.Children.Add(new Path { Data = DialArc(DialStart, DialStart + DialSweep, r), Stroke = Brush(40, 255, 255, 255), StrokeThickness = 11 * s });
+            dialStatic.Children.Add(new Path { Data = DialArc(DialStart + DialSweep * 0.9, DialStart + DialSweep, r), Stroke = Brush(110, 230, 50, 40), StrokeThickness = 11 * s });
+            // Numbered ticks every round step (4 to 8 of them), small ticks between.
+            double mag = Math.Pow(10, Math.Floor(Math.Log10(Math.Max(1, max))));
+            double step = mag;
+            foreach (double m in new[] { 0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5 }) if (max / (m * mag) <= 8) { step = m * mag; break; }
+            int minors = 4;
+            for (int i = 0; i * step / minors <= max + 1e-6; i++)
+            {
+                double v = i * step / minors;
+                double deg = DialStart + DialSweep * v / max;
+                bool major = i % minors == 0;
+                dialStatic.Children.Add(new Line
+                {
+                    StartPoint = DialPoint(deg, r - (major ? 22 : 15) * s), EndPoint = DialPoint(deg, r - 8 * s),
+                    Stroke = major ? White : Brush(150, 220, 225, 230), StrokeThickness = (major ? 2.5 : 1.2) * s,
+                });
+                if (!major) continue;
+                var t = Label(12 * s, Grey, FontWeight.Bold);
+                t.Text = v >= 1000 && v % 1000 == 0 ? $"{v / 1000:0}k" : v.ToString("0.#");
+                t.Measure(Size.Infinity);
+                var at = DialPoint(deg, r - 36 * s);
+                Canvas.SetLeft(t, at.X - t.DesiredSize.Width / 2);
+                Canvas.SetTop(t, at.Y - t.DesiredSize.Height / 2);
+                dialStatic.Children.Add(t);
+            }
+        }
+        private readonly List<Border> keyCells = new List<Border>();
+        private int keysShown = -1;
+        private bool loggedGyro;
         private DispatcherTimer hideTimer;
         private readonly List<(WeakReference<Visual> Visual, IDisposable Undo)> hidden = new List<(WeakReference<Visual>, IDisposable)>();
 
@@ -1122,6 +1318,16 @@ namespace RaceDisplay
                     var (v, depth) = stack.Pop();
                     if (ReferenceEquals(v, root)) continue;
                     string ns = v.GetType().Namespace ?? "";
+                    if (depth > 0 && ns.StartsWith("Keen.Game2.Client.UI.HUD") && keepGyro)
+                    {
+                        // Keep the gyro: leave it (and whatever holds it) showing, hide the rest around it.
+                        if (v.GetType().Name == "CockpitGyroScreen") { SetGyroMode(v); continue; }
+                        if (HoldsGyro(v))
+                        {
+                            foreach (var c in Avalonia.VisualTree.VisualExtensions.GetVisualChildren(v)) stack.Push((c, depth + 1));
+                            continue;
+                        }
+                    }
                     if (depth > 0 && ns.StartsWith("Keen.Game2.Client.UI.HUD"))
                     {
                         if (!hidden.Exists(h => h.Visual.TryGetTarget(out var t) && ReferenceEquals(t, v)))
@@ -1147,6 +1353,114 @@ namespace RaceDisplay
 
         private bool loggedKeptScreens;
 
+        // Which of the game's HUD views hold the gyro (worked out once per view: the tree is walked 4 times a second).
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Visual, object> holdsGyro = new System.Runtime.CompilerServices.ConditionalWeakTable<Visual, object>();
+        private static readonly object Yes = new object();
+
+        private static bool HoldsGyro(Visual v)
+        {
+            if (holdsGyro.TryGetValue(v, out var known)) return ReferenceEquals(known, Yes);
+            bool has = HasGyro(v, 0);
+            if (has) holdsGyro.AddOrUpdate(v, Yes);   // a "no" isn't kept: the gyro may be added to it later
+            return has;
+        }
+
+        /// <summary>Ship analyser panel: a row per stat, one column per grid (the second one coloured against the first).</summary>
+        private void UpdateAnalyser(HudModel.AnalyserPanel a, double s, IBrush fill)
+        {
+            analyserBox.IsVisible = a != null;
+            if (a == null) { analyserFor = null; return; }
+            analyserBox.Background = fill;
+            var key = new System.Text.StringBuilder(a.Heading).Append(a.TitleA).Append(a.TitleB).Append(a.Hint);
+            foreach (var r in a.Rows) key.Append(r.Label).Append(r.A).Append(r.B).Append(r.ColourB.G).Append(r.ColourA.G);
+            string k = key.ToString();
+            if (k == analyserFor) return;
+            analyserFor = k;
+            analyserTitle.Text = a.Heading ?? "SHIP ANALYSER";
+            analyserHint.Text = a.Hint ?? "";
+            analyserHint.IsVisible = !string.IsNullOrEmpty(a.Hint);
+            analyserGrid.Children.Clear();
+            analyserGrid.RowDefinitions.Clear();
+            analyserGrid.ColumnDefinitions.Clear();
+            bool two = a.TitleB != null;
+            analyserGrid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            analyserGrid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            if (two) analyserGrid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            void Cell(string text, int row, int col, IBrush brush, bool bold = false, double size = 14)
+            {
+                var t = Label(size * s, brush, bold ? FontWeight.Bold : FontWeight.Normal);
+                t.Text = text ?? "";
+                t.Margin = new Thickness(col == 0 ? 0 : 16 * s, 1 * s, 0, 1 * s);
+                if (col > 0) t.HorizontalAlignment = HorizontalAlignment.Right;
+                Grid.SetRow(t, row); Grid.SetColumn(t, col);
+                analyserGrid.Children.Add(t);
+            }
+            int rowNo = 0;
+            if (a.Rows.Count > 0)
+            {
+                analyserGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                Cell(a.TitleA, rowNo, 1, Brush(new HudColor(255, 210, 60, 255)), true, 15);
+                if (two) Cell(a.TitleB, rowNo, 2, Brush(new HudColor(80, 200, 255, 255)), true, 15);
+                rowNo++;
+            }
+            else
+            {
+                analyserGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                Cell(a.TitleA, rowNo++, 0, White, true, 15);
+            }
+            foreach (var r in a.Rows)
+            {
+                analyserGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                Cell(r.Label, rowNo, 0, Grey);
+                Cell(r.A, rowNo, 1, Brush(r.ColourA.WithAlpha(255)), true);
+                if (two) Cell(r.B, rowNo, 2, Brush(r.ColourB.WithAlpha(255)), true);
+                rowNo++;
+            }
+        }
+
+        private static bool HasGyro(Visual v, int depth)
+        {
+            if (depth > 14) return false;
+            foreach (var c in Avalonia.VisualTree.VisualExtensions.GetVisualChildren(v))
+                if (c.GetType().Name == "CockpitGyroScreen" || HasGyro(c, depth + 1)) return true;
+            return false;
+        }
+
+        private static readonly Dictionary<Type, System.Reflection.FieldInfo> gyroFields = new Dictionary<Type, System.Reflection.FieldInfo>();
+
+        /// <summary>Switches the game's gyro to target based (when that's turned on).</summary>
+        private void SetGyroMode(Visual gyro)
+        {
+            if (!gyroTargetBased) return;
+            try
+            {
+                foreach (object target in new object[] { gyro, (gyro as StyledElement)?.DataContext })
+                {
+                    if (target == null) continue;
+                    // An Avalonia property on the view, or a plain property on its view model (looked up once per type).
+                    var type = target.GetType();
+                    if (!gyroFields.TryGetValue(type, out var field))
+                        gyroFields[type] = field = type.GetField("TargetBasedGyroProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy);
+                    if (field?.GetValue(null) is AvaloniaProperty ap && target is AvaloniaObject ao)
+                    {
+                        if (!Equals(ao.GetValue(ap), true)) ao.SetValue(ap, true);
+                        return;
+                    }
+                    var prop = target.GetType().GetProperty("TargetBasedGyro");
+                    if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+                    {
+                        if (!(bool)prop.GetValue(target)) prop.SetValue(target, true);
+                        return;
+                    }
+                }
+                if (!loggedGyro) { loggedGyro = true; PluginLog.Info("Gyro: couldn't find its target based switch"); }
+            }
+            catch (Exception e)
+            {
+                if (!loggedGyro) { loggedGyro = true; PluginLog.Error("Gyro: couldn't switch to target based", e); }
+            }
+        }
+
         private static bool IsScreen(Visual v)
         {
             for (var t = v.GetType(); t != null; t = t.BaseType) if (t.Name == "ScreenView") return true;
@@ -1155,6 +1469,12 @@ namespace RaceDisplay
 
         private void Update(HudModel m)
         {
+            if (m.KeepGyro != keepGyro || m.GyroTargetBased != gyroTargetBased)
+            {
+                keepGyro = m.KeepGyro;
+                gyroTargetBased = m.GyroTargetBased;
+                if (hideGameHud) SetHideGameHud(false);   // put everything back, then hide again with the new choice
+            }
             SetHideGameHud(m.HideGameHud);
             double s = builtScale;
             IBrush fill = Brush(m.BackgroundOpacity, 12, 15, 18);
@@ -1367,6 +1687,104 @@ namespace RaceDisplay
 
             UpdateMinimap(m.Minimap, s, fill);
 
+            UpdateAnalyser(m.Analyser, s, fill);
+
+            // Speedometer and flight keys
+            speedoBox.IsVisible = m.Speedo != null;
+            // The panels on the left side (lap list, results...) stop above the dial instead of running under it:
+            // their bottom margin grows to clear it, and they're scaled down to fit if needed.
+            {
+                // With the game's own HUD showing, its status panels sit in both bottom corners: stop above them too.
+                double baseBottom = (m.TimerInCorner || !m.HideGameHud ? 260 : 30) * s;
+                double clear = m.Speedo != null ? 40 * s + dialSize + 16 * s : 0;
+                bool leftOnLeft = !m.SwapSides;                       // leftFit is on the left unless swapped
+                bool cornerOnLeft = m.TimerInCorner && m.SwapSides;   // cornerFit is on the left when swapped
+                double lb = leftOnLeft ? Math.Max(baseBottom, clear) : baseBottom;
+                double cb = cornerOnLeft ? Math.Max(baseBottom, clear) : baseBottom;
+                if (Math.Abs(leftFit.Margin.Bottom - lb) > 0.5) leftFit.Margin = new Thickness(30 * s, 30 * s, 30 * s, lb);
+                if (Math.Abs(cornerFit.Margin.Bottom - cb) > 0.5) cornerFit.Margin = new Thickness(30 * s, 30 * s, 30 * s, cb);
+            }
+            if (m.Speedo != null)
+            {
+                double max = Math.Max(1, m.SpeedoMax);
+                if (max != dialFor || !ReferenceEquals(fill, dialFill)) BuildDial(max, s, fill);
+                double frac = Math.Clamp(m.SpeedoValue / max, 0, 1);
+                double r = dialSize / 2 - 14 * s;
+                double deg = DialStart + DialSweep * Math.Max(frac, 0.002);
+                dialArc.Data = DialArc(DialStart, deg, r);
+                // White, then orange near the top, red in the last tenth.
+                dialArc.Stroke = frac >= 0.9 ? Brush(HudColor.Red) : frac >= 0.75 ? Brush(255, 255, 160, 40) : Brush(255, 90, 210, 255);
+                dialTip.StartPoint = DialPoint(deg, r - 26 * s);
+                dialTip.EndPoint = DialPoint(deg, r + 7 * s);
+                speedoValue.Text = m.Speedo;
+                speedoUnit.Text = (m.SpeedoUnit ?? "").ToUpperInvariant();
+            }
+            bool attitude = m.Roll.HasValue || m.Pitch.HasValue;
+            rollBox.IsVisible = attitude;
+            if (attitude)
+            {
+                rollCanvasBox.IsVisible = rollText.IsVisible = m.Roll.HasValue;
+                pitchText.IsVisible = m.Pitch.HasValue;
+                rollBox.Background = fill;
+                rollBox.Margin = new Thickness(0, 0, (m.KeysCorner == 2 ? 30 + 124 + 12 : 30) * s, !m.HideGameHud ? 260 * s : 40 * s);
+            }
+            if (m.Pitch.HasValue)
+            {
+                double pitchDeg = Math.Round(m.Pitch.Value);
+                if (pitchDeg != pitchShown)
+                {
+                    pitchShown = pitchDeg;
+                    pitchText.Text = Math.Abs(pitchDeg) < 0.5 ? "PITCH 0°" : $"PITCH {Math.Abs(pitchDeg):0}° {(pitchDeg > 0 ? "UP" : "DOWN")}";
+                    pitchText.Foreground = Math.Abs(pitchDeg) > 60 ? Brush(HudColor.Red) : Math.Abs(pitchDeg) > 30 ? Brush(HudColor.Yellow) : White;
+                }
+            }
+            if (m.Roll.HasValue)
+            {
+                rollBox.Background = fill;
+                // Left of the flight keys when they're showing (both sit in the bottom right corner).
+                rollBox.Margin = new Thickness(0, 0, (m.KeysCorner == 2 ? 30 + 124 + 12 : 30) * s, !m.HideGameHud ? 260 * s : 40 * s);
+                double rollDeg = Math.Round(m.Roll.Value);
+                double rollRate = Math.Round(m.RollRate);
+                if (rollDeg != rollShown || rollRate != rollRateShown)
+                {
+                    rollShown = rollDeg;
+                    rollRateShown = rollRate;
+                    double rollA = rollDeg * Math.PI / 180, rollCx = 60 * s, rollCy = 32 * s, rollHalf = 34 * s;
+                    double rollDx = Math.Cos(rollA) * rollHalf, rollDy = Math.Sin(rollA) * rollHalf;   // (screen y goes down: + = right wing down)
+                    rollBar.StartPoint = rollBarBack.StartPoint = new Point(rollCx - rollDx, rollCy - rollDy);
+                    rollBar.EndPoint = rollBarBack.EndPoint = new Point(rollCx + rollDx, rollCy + rollDy);
+                    rollFin.StartPoint = new Point(rollCx, rollCy);
+                    rollFin.EndPoint = new Point(rollCx + Math.Sin(rollA) * 14 * s, rollCy - Math.Cos(rollA) * 14 * s);
+                    double rollAbs = Math.Abs(rollDeg);
+                    rollText.Text = (rollAbs < 0.5 ? "ROLL 0°" : $"ROLL {rollAbs:0}° {(rollDeg > 0 ? "R" : "L")}")
+                        + "\n" + (Math.Abs(rollRate) < 0.5 ? "0°/s" : $"{Math.Abs(rollRate):0}°/s {(rollRate > 0 ? "R" : "L")}");
+                    rollText.TextAlignment = TextAlignment.Center;
+                    var rollColour = rollAbs > 60 ? Brush(HudColor.Red) : rollAbs > 30 ? Brush(HudColor.Yellow) : Brush(255, 90, 210, 240);
+                    rollBar.Stroke = rollColour;
+                    rollFin.Stroke = rollColour;
+                }
+            }
+            keysBox.IsVisible = m.KeysCorner > 0;
+            if (m.KeysCorner > 0)
+            {
+                keysBox.HorizontalAlignment = m.KeysCorner == 1 ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+                // Bottom left with the speedometer there too: the keys sit just above the dial.
+                keysBox.Margin = new Thickness(30 * s, 0, 30 * s, m.KeysCorner == 1 && m.Speedo != null ? 40 * s + dialSize + 10 * s
+                    : !m.HideGameHud ? 260 * s : 40 * s);   // above the game's ship status panel when that's showing
+                if (m.KeysDown != keysShown)
+                {
+                    keysShown = m.KeysDown;
+                    var lit = Brush(HudColor.Orange.WithAlpha(230));
+                    for (int k = 0; k < keyCells.Count; k++)
+                    {
+                        bool down = (m.KeysDown & (1 << k)) != 0;
+                        keyCells[k].Background = down ? lit : fill;
+                        ((TextBlock)keyCells[k].Child).Foreground = down ? Brushes.Black : White;
+                    }
+                }
+            }
+            else keysShown = -1;
+
             // Countdown
             if (m.Countdown != null) { countdownText.Text = m.Countdown; countdownText.Foreground = Brush(m.CountdownColour); }
             countdownText.Opacity = m.Countdown != null ? 1 : 0;
@@ -1435,9 +1853,11 @@ namespace RaceDisplay
         /// </summary>
         private void UpdateGraph(HudModel.ResultsPanel res, double s)
         {
-            if (ReferenceEquals(res, graphFor) && res.GraphPage == graphPage) return; // already drawn
+            if (ReferenceEquals(res, graphFor) && res.GraphPage == graphPage && res.GraphVersion == graphVersion) return; // already drawn
             graphFor = res;
             graphPage = res.GraphPage;
+            graphVersion = res.GraphVersion;
+            string lapNote = res.GraphLap != null ? "\n" + res.GraphLap.ToUpperInvariant() : "";
             graphBox.IsVisible = res.Graph.Count > 0 && res.GraphMaxSpeed > 0;
             if (!graphBox.IsVisible) return;
             double w = graphCanvas.Width, h = graphCanvas.Height;
@@ -1501,7 +1921,7 @@ namespace RaceDisplay
                     double y = h - plotH * q / 4.0;
                     graphCanvas.Children.Add(new Line { StartPoint = new Point(0, y), EndPoint = new Point(w, y), Stroke = UiBrushes.Get(35, 255, 255, 255), StrokeThickness = 1 });
                 }
-                graphTitle.Text = $"SPEED ROUND THE LAP   top {RaceDisplay.Core.GameOptions.Speed(res.GraphMaxSpeed)}" + (pages ? "   (1/2)" : "");
+                graphTitle.Text = $"SPEED ROUND THE LAP   top {RaceDisplay.Core.GameOptions.Speed(res.GraphMaxSpeed)}" + (pages ? "   (1/2)" : "") + lapNote;
 
                 // Shading between this race and the line it's compared with: green = faster there, red = slower.
                 if (res.Graph.Count > 1)
@@ -1593,7 +2013,7 @@ namespace RaceDisplay
                 Scale($"{span:0.0#}s ahead", top + 6 * s, Brush(HudColor.Green));
                 Scale($"{span:0.0#}s behind", h - 6 * s, Brush(HudColor.Red));
                 double end = res.Gap[res.Gap.Count - 1].Gap;
-                graphTitle.Text = $"TIME GAP ROUND THE LAP   vs {res.GapAgainst}   finish {(end <= 0 ? $"{-end:0.000}s ahead" : $"{end:0.000}s behind")}   (2/2)";
+                graphTitle.Text = $"TIME GAP ROUND THE LAP   vs {res.GapAgainst}   finish {(end <= 0 ? $"{-end:0.000}s ahead" : $"{end:0.000}s behind")}   (2/2)" + lapNote;
                 graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 60, 220, 90), "ahead (gaining time)", true));
                 graphLegend.Children.Add(LegendKey(s, UiBrushes.Get(150, 230, 60, 60), "behind", true));
             }
@@ -1635,6 +2055,23 @@ namespace RaceDisplay
             markerLayer.IsVisible = true;
             markerScale = s;
             placed.Clear();
+            // Speed vector: a ring with wings and a fin where the ship is heading, outlined so it shows on any background.
+            if (vectorMark == null)
+            {
+                var geo = StreamGeometry.Parse("M -11,0 A 11,11 0 1 1 11,0 A 11,11 0 1 1 -11,0 Z M -11,0 L -26,0 M 11,0 L 26,0 M 0,-11 L 0,-21");
+                vectorMark = new Canvas { IsHitTestVisible = false, IsVisible = false };
+                vectorMark.Children.Add(new Path { Data = geo, Stroke = Brush(170, 0, 0, 0), StrokeThickness = 6, StrokeLineCap = PenLineCap.Round });
+                vectorMark.Children.Add(new Path { Data = geo, Stroke = Brush(255, 170, 255, 60), StrokeThickness = 3, StrokeLineCap = PenLineCap.Round });
+                markerLayer.Children.Add(vectorMark);
+            }
+            vectorMark.IsVisible = m.VectorX.HasValue;
+            if (m.VectorX.HasValue)
+            {
+                vectorMark.RenderTransform = new ScaleTransform(s * 1.2, s * 1.2);
+                vectorMark.RenderTransformOrigin = new RelativePoint(0, 0, RelativeUnit.Absolute);
+                Canvas.SetLeft(vectorMark, m.VectorX.Value * w);
+                Canvas.SetTop(vectorMark, m.VectorY.Value * h);
+            }
             IBrush fill = Brush((byte)Math.Min(200, (int)m.BackgroundOpacity), 12, 15, 18);
 
             while (markerPool.Count < m.Markers.Count)
@@ -1837,11 +2274,18 @@ namespace RaceDisplay
 
         private Grid NewResultLine(double s)
         {
+            // Label on the left, value on the right; a long value (penalties) wraps onto more lines instead of
+            // running off the panel.
             var g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
             g.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Auto));
+            g.ColumnDefinitions.Add(new ColumnDefinition(new GridLength(1, GridUnitType.Star)));
             var label = Label(17 * s, Grey);
+            label.VerticalAlignment = VerticalAlignment.Top;
             var value = Label(17 * s, White, FontWeight.Bold);
+            value.TextWrapping = TextWrapping.Wrap;
+            value.TextAlignment = TextAlignment.Right;
+            value.HorizontalAlignment = HorizontalAlignment.Stretch;
+            value.Margin = new Thickness(12 * s, 0, 0, 0);
             Grid.SetColumn(label, 0);
             Grid.SetColumn(value, 1);
             g.Children.Add(label);

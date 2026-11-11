@@ -887,7 +887,669 @@ namespace RaceDisplay
             catch (Exception ex) { LogOnce("Stop ship failed: " + ex.Message); }
         }
 
+        public bool SetShipVelocity(Vec3D velocity)
+        {
+            try
+            {
+                if (ownGrid == null || !ownGrid.Data.Has<WorldTransform>()) return false;
+                var v = new Vector3((float)velocity.X, (float)velocity.Y, (float)velocity.Z);
+                // The server's copy of the ship is the one that moves it (single player / hosting); the client's as well so it shows at once.
+                Vector3D at = EntityTransformFunctions.GetWorldTransform(ownGrid.Data).Position;
+                var storage = ownGrid.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                Entity twin = ServerTwin(ownGrid, ToVec(at), storage != null ? storage.GetAllCubeBlocks().Length : 0);
+                bool done = false;
+                foreach (Entity e in new[] { twin, ownGrid })
+                {
+                    if (e == null) continue;
+                    ref RigidBodyData rb = ref e.Data.TryGetWritePtr<RigidBodyData>();
+                    if (System.Runtime.CompilerServices.Unsafe.IsNullRef(ref rb)) continue;
+                    rb.LinearVelocity = v;
+                    done |= ReferenceEquals(e, twin);
+                }
+                if (!done) LogOnce("Exit speed: the server's copy of the ship wasn't found (only works in single player or when hosting)");
+                return done;
+            }
+            catch (Exception ex) { LogOnce("Exit speed failed: " + ex.Message); return false; }
+        }
+
+        private readonly List<object> gyroCockpits = new List<object>();
+
+        private static void SetTargetGyro(object cockpit, bool on)
+        {
+            var prop = cockpit.GetType().GetProperty("TargetBasedGyro", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            prop?.SetValue(cockpit, on);
+        }
+
+        public int TargetGyroOff()
+        {
+            gyroCockpits.Clear();
+            try
+            {
+                if (ownGrid == null || !ownGrid.Data.Has<WorldTransform>()) return 0;
+                Vector3D at = EntityTransformFunctions.GetWorldTransform(ownGrid.Data).Position;
+                var storage = ownGrid.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                // (The setting lives on the server's copy of the cockpit; without one, the client's own is tried.)
+                Entity source = ServerTwin(ownGrid, ToVec(at), storage != null ? storage.GetAllCubeBlocks().Length : 0) ?? ownGrid;
+                var blocks = source.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                if (blocks == null) return 0;
+                var found = new List<object>();
+                foreach (var b in blocks.GetAllCubeBlocks())
+                {
+                    Entity ent = b?.Entity;
+                    if (ent == null) continue;
+                    blockEntities.Clear();
+                    CollectBlockEntities(ent, blockEntities, 0);
+                    foreach (Entity part in blockEntities)
+                    {
+                        if (!(Member(part, "Components") is System.Collections.IEnumerable comps)) continue;
+                        foreach (object comp in comps)
+                            if (comp != null && comp.GetType().Name == "CockpitComponent" && Member(comp, "TargetBasedGyro") is bool on && on) found.Add(comp);
+                    }
+                }
+                foreach (object cockpit in found) { SetTargetGyro(cockpit, false); gyroCockpits.Add(cockpit); }
+                if (gyroCockpits.Count > 0) PluginLog.Info($"Teleport: target based gyro off and back on for {gyroCockpits.Count} cockpit(s)");
+            }
+            catch (Exception ex) { LogOnce("Target based gyro reset failed: " + (ex.InnerException ?? ex).Message); }
+            return gyroCockpits.Count;
+        }
+
+        public void TargetGyroRestore()
+        {
+            try { foreach (object cockpit in gyroCockpits) SetTargetGyro(cockpit, true); }
+            catch (Exception ex) { LogOnce("Target based gyro couldn't be turned back on: " + (ex.InnerException ?? ex).Message); }
+            gyroCockpits.Clear();
+        }
+
+        public bool TryGetGravity(out Vec3D down)
+        {
+            down = Vec3D.Zero;
+            try
+            {
+                if (ownGrid == null || !ownGrid.Data.TryGet(out Keen.VRage.Core.Game.GameSystems.Gravity.GravityEffectData g)) return false;
+                var sum = new Vec3D(g.GravitySum.X, g.GravitySum.Y, g.GravitySum.Z);
+                if (sum.Length < 0.05) return false;
+                down = sum.Normalized();
+                return true;
+            }
+            catch (Exception ex) { LogOnce("Gravity not read: " + ex.Message); return false; }
+        }
+
         private static Vec3D V(Vector3 v) => new Vec3D(v.X, v.Y, v.Z);
+
+        // ---------------------------------------------------------------- ship analyser
+
+        public object OwnGrid => ownGrid;
+
+        /// <summary>
+        /// The grid whose nearest block the ray hits first (blocks, not the grid's whole box, so the station or
+        /// platform you stand on doesn't get in the way of the ship you look at).
+        /// </summary>
+        public object LookedAtGrid(Vec3D origin, Vec3D direction, double maxDistance, bool includeOwn)
+        {
+            try
+            {
+                Session session = CurrentSession();
+                if (session == null) return null;
+                Vec3D end = origin + direction * maxDistance;
+                Entity bestGrid = null;
+                double best = maxDistance;
+                foreach (Entity e in session.GetEntitiesOfType<CubeGridComponent>())
+                {
+                    if (e == null || (!includeOwn && ReferenceEquals(e, ownGrid))) continue;
+                    if (!TryGridBox(e, origin, out GridBox gb, out WorldTransform t)) continue;
+                    if (gb.Distance > best) continue;   // a nearer block has been found already
+                    var test = new TimingGate(gb.Center, gb.Forward, gb.Up, gb.Width, gb.Height, gb.Depth);
+                    if (!test.SegmentIntersects(origin, end) && !test.Contains(origin)) continue;
+                    var storage = e.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                    if (storage == null) continue;
+                    // The ray in the grid's own frame, then tested against each block's box.
+                    Vec3D ax = ToVec(WorldTransform.TransformDirection(new Vector3D(1, 0, 0), t));
+                    Vec3D ay = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 1, 0), t));
+                    Vec3D az = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 0, 1), t));
+                    Vec3D o = origin - ToVec(t.Position);
+                    double[] ro = { Vec3D.Dot(o, ax), Vec3D.Dot(o, ay), Vec3D.Dot(o, az) };
+                    double[] rd = { Vec3D.Dot(direction, ax), Vec3D.Dot(direction, ay), Vec3D.Dot(direction, az) };
+                    foreach (var b in storage.GetAllCubeBlocks())
+                    {
+                        if (b == null) continue;
+                        BoundingBox local = CubeGridCoords.GridToLocal(b.AABB);
+                        double[] lo = { Math.Min(local.Min.X, local.Max.X), Math.Min(local.Min.Y, local.Max.Y), Math.Min(local.Min.Z, local.Max.Z) };
+                        double[] hi = { Math.Max(local.Min.X, local.Max.X), Math.Max(local.Min.Y, local.Max.Y), Math.Max(local.Min.Z, local.Max.Z) };
+                        double hit = RayHitsBox(ro, rd, lo, hi);
+                        // A block the camera is inside (your own cockpit, or the floor you stand in) doesn't count.
+                        if (hit <= 0.05 || hit >= best) continue;
+                        best = hit; bestGrid = e;
+                    }
+                }
+                return bestGrid;
+            }
+            catch (Exception e) { LogOnce("Analyser: looked-at grid failed: " + e.Message); return null; }
+        }
+
+        private static object Member(object o, string name)
+        {
+            if (o == null) return null;
+            // Most derived first, one class at a time (a derived class can hide a base member of the same name,
+            // which makes a plain GetProperty throw "ambiguous match").
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            for (var type = o.GetType(); type != null && type != typeof(object); type = type.BaseType)
+            {
+                foreach (var p in type.GetProperties(flags))
+                    if (p.Name == name && p.GetIndexParameters().Length == 0) return p.GetValue(o);
+                var f = type.GetField(name, flags);
+                if (f != null) return f.GetValue(o);
+            }
+            return null;
+        }
+
+        private static bool HasMember(object o, string name)
+        {
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            for (var type = o?.GetType(); type != null && type != typeof(object); type = type.BaseType)
+            {
+                foreach (var p in type.GetProperties(flags)) if (p.Name == name) return true;
+                if (type.GetField(name, flags) != null) return true;
+            }
+            return false;
+        }
+
+        private static bool IsOrDerives(object o, string typeName)
+        {
+            for (var type = o?.GetType(); type != null; type = type.BaseType) if (type.Name == typeName) return true;
+            return false;
+        }
+
+        /// <summary>"kW", "kWh", "L"... for the game's unit enum (empty if it has none).</summary>
+        private static string UnitSymbol(object unit)
+        {
+            switch (unit?.ToString())
+            {
+                case "Kilowatts": return "kW";
+                case "KilowattHours": return "kWh";
+                case "Liters": return "L";
+                case "LitersPerSecond": return "L/s";
+                case "CubicMeters": return "m3";
+                case "Kilograms": return "kg";
+                case null: case "None": return "";
+                default: return unit.ToString();
+            }
+        }
+
+        // ---- Singleplayer runs a server session alongside the client one. The client's copy of a grid only has the
+        // parts the client needs (no gyroscope, inventory, battery or tank parts), so those are read from the
+        // server's copy of the same grid: the server grid in the same place with the same number of blocks.
+        private readonly Dictionary<Entity, Entity> serverTwins = new Dictionary<Entity, Entity>();
+
+        private Entity ServerTwin(Entity clientGrid, Vec3D at, int blocks)
+        {
+            try
+            {
+                if (serverTwins.TryGetValue(clientGrid, out Entity known) && known != null && known.Data.Has<WorldTransform>()
+                    && (ToVec(EntityTransformFunctions.GetWorldTransform(known.Data).Position) - at).Length < 10)
+                    return known;
+                var clientSession = CurrentSession();
+                Entity best = null;
+                double bestScore = double.MaxValue;
+                lock (Worlds)
+                {
+                    foreach (var weak in Worlds)
+                    {
+                        if (!weak.TryGetTarget(out var world)) continue;
+                        var session = world.OwnedSession;
+                        if (session == null || ReferenceEquals(session, clientSession)) continue;
+                        foreach (Entity e in session.GetEntitiesOfType<CubeGridComponent>())
+                        {
+                            if (e == null || !e.Data.Has<WorldTransform>()) continue;
+                            double d = (ToVec(EntityTransformFunctions.GetWorldTransform(e.Data).Position) - at).Length;
+                            if (d > 10) continue;
+                            var st = e.TryGet<CubeGridComponent>(default)?.CubeBlockStorage;
+                            int n = st != null ? st.GetAllCubeBlocks().Length : 0;
+                            double score = d + Math.Abs(n - blocks) * 5;
+                            if (score < bestScore) { bestScore = score; best = e; }
+                        }
+                    }
+                }
+                if (serverTwins.Count > 100) serverTwins.Clear();
+                serverTwins[clientGrid] = best;
+                return best;
+            }
+            catch (Exception ex) { LogOnce("Analyser: server grid lookup failed: " + ex.Message); return null; }
+        }
+
+        /// <summary>A number from a float, double, int or the game's fixed-point type.</summary>
+        private static double Number(object v)
+        {
+            switch (v)
+            {
+                case null: return 0;
+                case float f: return f;
+                case double d: return d;
+                case int i: return i;
+                case long l: return l;
+            }
+            var type = v.GetType();
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>)) return 0;
+            foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                if ((m.Name == "op_Explicit" || m.Name == "op_Implicit") && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == type
+                    && (m.ReturnType == typeof(double) || m.ReturnType == typeof(float)))
+                    return Convert.ToDouble(m.Invoke(null, new[] { v }));
+            return double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double x) ? x : 0;
+        }
+
+        private static string ResourceName(object resourceType)
+        {
+            if (resourceType == null) return "resource";
+            string n = null;
+            try { n = Member(resourceType, "DebugNameShort") as string; } catch { /* below */ }
+            if (string.IsNullOrWhiteSpace(n)) n = (Member(resourceType, "DebugName") ?? Member(resourceType, "Id") ?? resourceType)?.ToString() ?? "resource";
+            int dot = n.LastIndexOfAny(new[] { '/', '.', ':' });
+            return dot >= 0 && dot < n.Length - 1 ? n.Substring(dot + 1) : n;
+        }
+
+        private static readonly HashSet<string> loggedAnalyserTypes = new HashSet<string>();
+        private readonly List<Entity> blockEntities = new List<Entity>();
+
+        /// <summary>An entity and the entities under it (a few levels down).</summary>
+        private static void CollectBlockEntities(Entity e, List<Entity> into, int depth)
+        {
+            if (e == null || into.Contains(e)) return;
+            if (depth > 0 && e.TryGet<CubeGridComponent>(default) != null) return;   // a subgrid on a rotor or piston: its own grid
+            into.Add(e);
+            if (depth >= 4 || into.Count > 64) return;
+            Span<Entity> kids;
+            try { kids = HierarchyComponentExtensions.TryGetDirectChilds(e); }
+            catch { return; }
+            foreach (Entity k in kids) CollectBlockEntities(k, into, depth + 1);
+        }
+
+        /// <summary>Adds one block part (thruster, gyroscope, inventory, battery / tank, producer) to the stats. Returns the kind of block it makes this (null = nothing special).</summary>
+        private static string AddPart(ShipStats st, CubeBlockComponent b, object comp, List<string> seenTypes)
+        {
+            string tn = comp.GetType().Name;
+            if (loggedAnalyserTypes.Count < 400 && loggedAnalyserTypes.Add(tn)) seenTypes.Add(tn);
+            if (tn == "ThrusterComponent")
+            {
+                var td = Member(comp, "Definition");
+                double power = Number(Member(td, "ThrustPower"));
+                object dirObj = Member(td, "ThrustDirection");
+                if (dirObj == null) return null;
+                st.Thrusters++;
+                var gridDir = b.BlockOrientation.TransformDirection((Base6Directions.Direction)Convert.ToInt32(dirObj));
+                Vector3 v = Base6Directions.GetVector(gridDir);
+                // (forward = -Z, backward = +Z, left = -X, right = +X, up = +Y, down = -Y)
+                int slot = v.Z < -0.5f ? 0 : v.Z > 0.5f ? 1 : v.X < -0.5f ? 2 : v.X > 0.5f ? 3 : v.Y > 0.5f ? 4 : 5;
+                st.Thrust[slot] += power;
+                return "Thrusters";
+            }
+            if (tn == "GyroscopeComponent")
+            {
+                st.Gyros++;
+                st.GyroTorque += Number(Member(Member(comp, "_definition") ?? Member(comp, "Definition"), "MaxTorque"));
+                return "Gyroscopes";
+            }
+            if (tn == "InventoryComponent")
+            {
+                var idef = Member(comp, "Definition");
+                if (idef != null && Member(idef, "ExcludeFromCapacityStats") is bool ex && ex) return null;
+                st.Inventories++;
+                st.StorageMax += Number(Member(idef, "MaxMass"));
+                st.StorageUsed += Number(Member(comp, "DynamicMass"));
+                return "Cargo";
+            }
+            if (IsOrDerives(comp, "ResourceContainerComponent"))
+            {
+                // Batteries, hydrogen / oxygen tanks: how much they hold now and at most.
+                var rt = Member(comp, "ResourceType") ?? Member(Member(comp, "_definition"), "ResourceType");
+                string key = ResourceName(rt);
+                st.StoredNow[key] = (st.StoredNow.TryGetValue(key, out double n) ? n : 0) + Number(Member(comp, "CurrentChargeValue"));
+                double max = Number(Member(comp, "MaxChargeValue"));
+                if (max <= 0) max = Number(Member(Member(comp, "_definition"), "MaxCapacity"));
+                st.StoredMax[key] = (st.StoredMax.TryGetValue(key, out double m) ? m : 0) + max;
+                st.Containers[key] = (st.Containers.TryGetValue(key, out int c) ? c : 0) + 1;
+                if (!st.StoreUnits.ContainsKey(key)) st.StoreUnits[key] = UnitSymbol(Member(rt, "StorageUnits"));
+                return "Batteries and tanks";
+            }
+            // Producers (power, hydrogen...): MaxOutput (solar, wind...) or MaxResourceProduction (engines, generators).
+            var d = Member(comp, "Definition") ?? Member(comp, "_definition");
+            if (d == null) return null;
+            object resource = null; double most = 0;
+            if (HasMember(d, "MaxOutput")) { resource = Member(d, "ResourceType"); most = Number(Member(d, "MaxOutput")); }
+            else if (HasMember(d, "MaxResourceProduction")) { resource = Member(d, "ResourceProduced"); most = Number(Member(d, "MaxResourceProduction")); }
+            else return null;
+            if (most <= 0) return null;
+            string k = ResourceName(resource);
+            st.Output[k] = (st.Output.TryGetValue(k, out double o) ? o : 0) + most;
+            if (!st.OutputUnits.ContainsKey(k)) st.OutputUnits[k] = UnitSymbol(Member(resource, "FlowRateUnits"));
+            return "Generators";
+        }
+
+        /// <summary>Which kind wins when a block has several parts (a thruster with a small tank is a thruster).</summary>
+        private static int KindRank(string kind)
+        {
+            switch (kind)
+            {
+                case "Thrusters": return 6;
+                case "Gyroscopes": return 5;
+                case "Generators": return 4;
+                case "Batteries and tanks": return 3;
+                case "Cargo": return 2;
+                case "Other": return 1;
+                default: return 0;
+            }
+        }
+
+        /// <summary>One block type: the game's internal name (the key RPI values are kept by), how it's shown, and its icon.</summary>
+        internal sealed class BlockEntry
+        {
+            public string Key, Name, Category, Group;
+            public double Size;        // metres (its longest side)
+            public object Icon;        // the game's icon handle (null = none)
+            public object Image;       // the icon as a picture, once the menu has made it
+            public bool ImageTried;
+            public object Definition;  // the game's block definition
+            /// <summary>What the block does, for judging a fair cost: mass, thrust, torque, power, storage...</summary>
+            public readonly List<(string Label, string Text)> Stats = new List<(string, string)>();
+            public double Mass, Thrust;   // kg, N (0 = not a thruster)
+        }
+
+        private static string Si(double v, string unit)
+        {
+            double a = Math.Abs(v);
+            return a >= 1e6 ? $"{v / 1e6:0.##} M{unit}" : a >= 1e3 ? $"{v / 1e3:0.##} k{unit}" : $"{v:0.##} {unit}";
+        }
+
+        /// <summary>Fills in a block's stats from its definition and the definitions of its other parts.</summary>
+        private static void FillStats(BlockEntry e, List<object> parts)
+        {
+            if (e.Stats.Count > 0) return;   // done already
+            try
+            {
+                e.Mass = Number(Member(e.Definition, "Mass"));
+                if (e.Mass > 0) e.Stats.Add(("Mass", $"{e.Mass:#,0.#} kg"));
+                double pcu = Number(Member(e.Definition, "PCU"));
+                if (pcu > 0) e.Stats.Add(("PCU", $"{pcu:0}"));
+            }
+            catch { /* no mass */ }
+            if (parts == null) return;
+            foreach (object d in parts)
+            {
+                if (d == null || ReferenceEquals(d, e.Definition)) continue;
+                try
+                {
+                    if (HasMember(d, "ThrustPower"))
+                    {
+                        e.Thrust = Number(Member(d, "ThrustPower"));
+                        if (e.Thrust > 0)
+                        {
+                            e.Stats.Add(("Thrust", Si(e.Thrust, "N")));
+                            if (e.Mass > 0) e.Stats.Add(("Thrust / weight", $"{e.Thrust / e.Mass:0.#} N per kg"));
+                        }
+                        double use = Number(Member(d, "ResourcesRequiredToThrust"));
+                        if (use > 0)
+                        {
+                            e.Stats.Add(("Uses at full thrust", $"{use:#,0.##}"));
+                            if (e.Thrust > 0) e.Stats.Add(("Thrust / use", $"{e.Thrust / use:0.#} N each"));
+                        }
+                    }
+                    else if (HasMember(d, "MaxTorque"))
+                    {
+                        double torque = Number(Member(d, "MaxTorque"));
+                        if (torque > 0)
+                        {
+                            e.Stats.Add(("Max torque", Si(torque, "N m")));
+                            if (e.Mass > 0) e.Stats.Add(("Torque / weight", Si(torque / e.Mass, "N m") + " per kg"));
+                        }
+                    }
+                    else if (HasMember(d, "MaxCapacity"))
+                    {
+                        object rt = Member(d, "ResourceType");
+                        string what = ResourceName(rt);
+                        double cap = Number(Member(d, "MaxCapacity"));
+                        if (cap > 0) e.Stats.Add((what + " stored", $"{cap:#,0.##} {UnitSymbol(Member(rt, "StorageUnits"))}".Trim()));
+                        double give = Number(Member(d, "MaxDischargeRate"));
+                        if (give > 0) e.Stats.Add((what + " max output", $"{give:#,0.##} {UnitSymbol(Member(rt, "FlowRateUnits"))}".Trim()));
+                    }
+                    else if (HasMember(d, "MaxOutput") || HasMember(d, "MaxResourceProduction"))
+                    {
+                        bool plain = HasMember(d, "MaxOutput");
+                        object rt = Member(d, plain ? "ResourceType" : "ResourceProduced");
+                        double most = Number(Member(d, plain ? "MaxOutput" : "MaxResourceProduction"));
+                        if (most > 0) e.Stats.Add((ResourceName(rt) + " generated", $"{most:#,0.##} {UnitSymbol(Member(rt, "FlowRateUnits"))}".Trim()));
+                    }
+                    else if (d.GetType().Name == "InventoryDefinition")
+                    {
+                        double cargo = Number(Member(d, "MaxMass"));
+                        if (cargo > 0) e.Stats.Add(("Cargo", $"{cargo:#,0.#} kg"));
+                    }
+                }
+                catch { /* this part has nothing to show */ }
+            }
+        }
+
+        private static readonly Dictionary<object, BlockEntry> blockEntries = new Dictionary<object, BlockEntry>();
+        private static List<BlockEntry> allBlocks;
+
+        private static object FirstOf(object list)
+        {
+            try { if (list is System.Collections.IEnumerable e) foreach (object x in e) return x; }
+            catch { /* an empty game array */ }
+            return null;
+        }
+
+        private static string LocText(object locKey)
+        {
+            try
+            {
+                string text = locKey?.ToString();
+                return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+            }
+            catch { return null; }
+        }
+
+        /// <summary>A block type from its definition (kept, so each is only worked out once).</summary>
+        internal static BlockEntry BlockOf(object def)
+        {
+            if (def == null) return null;
+            lock (blockEntries)
+            {
+                if (blockEntries.TryGetValue(def, out var known)) return known;
+                string key = null;
+                try { key = Member(def, "DebugNameShort") as string; } catch { /* below */ }
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    key = def.ToString() ?? "";
+                    int colon = key.LastIndexOf(" : ", StringComparison.Ordinal);
+                    if (colon >= 0) key = key.Substring(colon + 3);
+                    try { key = Path.GetFileNameWithoutExtension(key); } catch { /* keep */ }
+                }
+                BlockEntry entry = null;
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    entry = new BlockEntry { Key = key.Trim(), Definition = def };
+                    try { entry.Size = Number(Member(def, "DisplaySize")); } catch { /* unknown */ }
+                    try
+                    {
+                        object ui = Member(def, "UIData");
+                        entry.Name = LocText(Member(ui, "Name"));
+                        entry.Icon = Member(ui, "Icon");
+                    }
+                    catch { /* no name / icon */ }
+                    try
+                    {
+                        // Its place in the build menu: block kind > group (tile) > subcategory > category.
+                        object kind = Member(def, "BlockKind");
+                        entry.Group = LocText(Member(kind, "Name"));
+                        object sub = FirstOf(Member(FirstOf(Member(kind, "BlockGroups")), "Subcategories"));
+                        entry.Category = LocText(Member(FirstOf(Member(sub, "Categories")), "Name")) ?? LocText(Member(sub, "Name"));
+                    }
+                    catch { /* not in the build menu */ }
+                    if (entry.Name == null) entry.Name = entry.Group ?? entry.Key.Replace('_', ' ');
+                    if (entry.Category == null) entry.Category = "Other";
+                }
+                blockEntries[def] = entry;
+                return entry;
+            }
+        }
+
+        /// <summary>Every block type in the game (read once), sorted by name then size.</summary>
+        internal static List<BlockEntry> AllBlocks()
+        {
+            if (allBlocks != null) return allBlocks;
+            var list = new List<BlockEntry>();
+            try
+            {
+                var managerType = AccessTools.TypeByName("Keen.VRage.Library.Definitions.DefinitionManager");
+                var singleton = AccessTools.TypeByName("Keen.VRage.Library.Utils.Singleton`1")?.MakeGenericType(managerType);
+                object manager = singleton?.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy)?.GetValue(null);
+                MethodInfo getAll = null;
+                foreach (var m in managerType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                    if (m.Name == "GetDefinitionsOfTypeAndDescendants" && m.IsGenericMethodDefinition && m.GetParameters().Length == 0) { getAll = m; break; }
+                if (manager == null || getAll == null) { PluginLog.Info("RPI designer: the game's block list wasn't found"); return list; }
+                // A block is made of several parts (thruster, gyroscope, battery...): each block definition's other parts.
+                var partsOf = new Dictionary<object, List<object>>();
+                try
+                {
+                    var compositeType = AccessTools.TypeByName("Keen.VRage.DCS.Definitions.EntityCompositeDefinition");
+                    if (compositeType != null && getAll.MakeGenericMethod(compositeType).Invoke(manager, null) is System.Collections.IEnumerable composites)
+                        foreach (object composite in composites)
+                        {
+                            if (!(Member(composite, "Definitions") is System.Collections.IEnumerable inside)) continue;
+                            var parts = new List<object>();
+                            try { foreach (object part in inside) if (part != null) parts.Add(part); } catch { continue; }
+                            foreach (object part in parts)
+                                if (part is CubeBlockDefinition && !partsOf.ContainsKey(part)) partsOf[part] = parts;
+                        }
+                }
+                catch (Exception statsError) { PluginLog.Info("RPI designer: block stats not read: " + (statsError.InnerException ?? statsError).Message); }
+                var seen = new HashSet<string>();
+                if (getAll.MakeGenericMethod(typeof(CubeBlockDefinition)).Invoke(manager, null) is System.Collections.IEnumerable defs)
+                    foreach (object def in defs)
+                    {
+                        var entry = BlockOf(def);
+                        if (entry == null || !seen.Add(entry.Key)) continue;
+                        FillStats(entry, partsOf.TryGetValue(def, out var its) ? its : null);
+                        list.Add(entry);
+                    }
+                PluginLog.Info($"RPI designer: stats found for {list.Count(x => x.Stats.Count > 2)} of {list.Count} block types");
+                list.Sort((x, y) =>
+                {
+                    int c = string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
+                    if (c == 0) c = x.Size.CompareTo(y.Size);
+                    return c != 0 ? c : string.Compare(x.Key, y.Key, StringComparison.OrdinalIgnoreCase);
+                });
+                PluginLog.Info($"RPI designer: {list.Count} block types, categories: " + string.Join(", ", list.Select(x => x.Category).Distinct().OrderBy(x => x)));
+                if (list.Count > 0) PluginLog.Info("RPI designer: e.g. " + string.Join("; ", list.Take(8).Select(x => $"{x.Key} = {x.Name} ({x.Size:0.##} m, {x.Category} / {x.Group}, icon {(x.Icon != null ? "yes" : "no")})")));
+                allBlocks = list;
+            }
+            catch (Exception e) { PluginLog.Info("RPI designer: couldn't read the game's blocks: " + (e.InnerException ?? e).Message); }
+            return list;
+        }
+
+        public ShipStats AnalyseGrid(object gridObj)
+        {
+            try
+            {
+                if (!(gridObj is Entity grid) || !grid.Data.Has<WorldTransform>()) return null;
+                var gc = grid.TryGet<CubeGridComponent>(default);
+                var storage = gc?.CubeBlockStorage;
+                if (storage == null) return null;
+                WorldTransform t = EntityTransformFunctions.GetWorldTransform(grid.Data);
+                var st = new ShipStats { Grid = grid };
+                if (TryGridBox(grid, ToVec(t.Position), out GridBox gb, out _))
+                {
+                    st.Name = gb.Name;
+                    st.SizeX = gb.Width; st.SizeY = gb.Height; st.SizeZ = gb.Depth;
+                    st.BoxCenter = gb.Center;
+                }
+                else st.BoxCenter = ToVec(t.Position);
+                try { string dn = Raw(gc.DisplayName); if (!string.IsNullOrWhiteSpace(dn)) st.Name = dn.Trim(); } catch { /* keep the debug name */ }
+                st.Right = ToVec(WorldTransform.TransformDirection(new Vector3D(1, 0, 0), t));
+                st.Up = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 1, 0), t));
+                st.Forward = ToVec(WorldTransform.TransformDirection(new Vector3D(0, 0, -1), t));   // the game's forward is -Z
+                double blockMass = 0;
+                foreach (var b in storage.GetAllCubeBlocks())
+                {
+                    if (b == null) continue;
+                    st.Blocks++;
+                    try
+                    {
+                        var def = b.Definition;
+                        if (def != null) { st.Pcu += def.PCU; blockMass += def.Mass; }
+                    }
+                    catch (Exception ex) { LogOnce("Analyser: block definition: " + ex.Message); }
+                }
+
+                // The parts: from the server's copy of the grid when there is one (singleplayer), else the client's.
+                Entity source = ServerTwin(grid, ToVec(t.Position), st.Blocks);
+                st.FromServer = source != null;
+                if (source == null) source = grid;
+                var sourceStorage = source.TryGet<CubeGridComponent>(default)?.CubeBlockStorage ?? storage;
+                var seenTypes = new List<string>();
+                foreach (var b in sourceStorage.GetAllCubeBlocks())
+                {
+                    if (b == null) continue;
+                    Entity ent = null;
+                    try { ent = b.Entity; } catch (Exception ex) { LogOnce("Analyser: block entity: " + ex.Message); }
+                    string kind = null;
+                    if (ent != null)
+                    {
+                        // A block's parts can also sit on entities under the block's own one.
+                        blockEntities.Clear();
+                        CollectBlockEntities(ent, blockEntities, 0);
+                        foreach (Entity part in blockEntities)
+                        {
+                            System.Collections.IEnumerable comps = null;
+                            try { comps = Member(part, "Components") as System.Collections.IEnumerable; }
+                            catch (Exception ex) { LogOnce("Analyser: block components: " + ex.Message); }
+                            if (comps == null) continue;
+                            foreach (object comp in comps)
+                            {
+                                if (comp == null) continue;
+                                try
+                                {
+                                    string partKind = AddPart(st, b, comp, seenTypes);
+                                    if (KindRank(partKind) > KindRank(kind)) kind = partKind;
+                                }
+                                catch (Exception ex) { LogOnce($"Analyser: {comp.GetType().Name}: {ex.Message}"); }
+                            }
+                        }
+                    }
+                    // Block types, for the RPI count.
+                    try
+                    {
+                        var type = BlockOf(b.Definition);
+                        if (type != null)
+                        {
+                            st.BlockCounts[type.Key] = (st.BlockCounts.TryGetValue(type.Key, out int have) ? have : 0) + 1;
+                            if (!st.BlockInfo.TryGetValue(type.Key, out var info) || KindRank(kind) > KindRank(info.Kind))
+                                st.BlockInfo[type.Key] = (kind ?? "Other", type.Size, type.Size > 0 ? $"{type.Name} {type.Size:0.##} m" : type.Name);
+                        }
+                    }
+                    catch (Exception ex) { LogOnce("Analyser: block type: " + ex.Message); }
+                }
+                if (seenTypes.Count > 0) PluginLog.Info($"Analyser: block components seen ({(st.FromServer ? "server" : "client")}): " + string.Join(", ", seenTypes));
+                // Mass and centre of mass from the physics when it has them, else the blocks' own masses.
+                bool physics = false;
+                try
+                {
+                    if (grid.Data.TryGet(out RigidBodyMassProperties mp) && mp.Mass > 0)
+                    {
+                        st.Mass = mp.Mass;
+                        st.CenterOfMass = ToVec(t.Position) + ToVec(WorldTransform.TransformDirection(new Vector3D(mp.CenterOfMass.X, mp.CenterOfMass.Y, mp.CenterOfMass.Z), t));
+                        physics = true;
+                    }
+                }
+                catch (Exception ex) { LogOnce("Analyser: mass properties: " + ex.Message); }
+                if (!physics)
+                {
+                    st.Mass = blockMass;
+                    st.CenterOfMass = st.BoxCenter;
+                }
+                st.ComOffset = (st.CenterOfMass - st.BoxCenter).Length;
+                return st;
+            }
+            catch (Exception e) { LogOnce("Analyser: couldn't analyse the grid: " + e.Message); return null; }
+        }
 
         public bool TryGetSeatPose(out Vec3D position, out Vec3D forward, out Vec3D up)
         {
