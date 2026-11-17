@@ -12,3 +12,31 @@ F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay
 F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\refint\RaceDisplay.dll
 F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\RaceDisplay.pdb
 F:\Documents\games\Space engineers 2\Plugins\RaceDisplay\obj\Release\ref\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.deps.json
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.pdb
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\bin\Release\0Harmony.dll
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.AssemblyReference.cache
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.GeneratedMSBuildEditorConfig.editorconfig
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfoInputs.cache
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfo.cs
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.CoreCompileInputs.cache
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisp.370C6E72.Up2Date
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\refint\RaceDisplay.dll
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.pdb
+F:\Documents\games\Space engineers 2\Plugins\Game Plugins\RaceDisplay\obj\Release\ref\RaceDisplay.dll
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.deps.json
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.dll
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\bin\Release\RaceDisplay.pdb
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\bin\Release\0Harmony.dll
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.AssemblyReference.cache
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfoInputs.cache
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.AssemblyInfo.cs
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.csproj.CoreCompileInputs.cache
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisp.370C6E72.Up2Date
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.dll
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\refint\RaceDisplay.dll
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\RaceDisplay.pdb
+C:\Users\lukes\AppData\Roaming\SE2Forge\Projects\Game Plugins\RaceDisplay\obj\Release\ref\RaceDisplay.dll

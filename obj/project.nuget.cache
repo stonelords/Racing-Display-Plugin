@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "kNTqyLu8hY0=",
+  "dgSpecHash": "PdsrqC7t3kc=",
   "success": true,
-  "projectFilePath": "F:\\Documents\\games\\Space engineers 2\\Plugins\\RaceDisplay\\RaceDisplay.csproj",
+  "projectFilePath": "C:\\Users\\lukes\\AppData\\Roaming\\SE2Forge\\Projects\\Game Plugins\\RaceDisplay\\RaceDisplay.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\lukes\\.nuget\\packages\\lib.harmony\\2.4.2\\lib.harmony.2.4.2.nupkg.sha512"
   ],

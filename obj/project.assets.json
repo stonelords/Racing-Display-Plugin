@@ -81,11 +81,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "F:\\Documents\\games\\Space engineers 2\\Plugins\\RaceDisplay\\RaceDisplay.csproj",
+      "projectUniqueName": "C:\\Users\\lukes\\AppData\\Roaming\\SE2Forge\\Projects\\Game Plugins\\RaceDisplay\\RaceDisplay.csproj",
       "projectName": "RaceDisplay",
-      "projectPath": "F:\\Documents\\games\\Space engineers 2\\Plugins\\RaceDisplay\\RaceDisplay.csproj",
+      "projectPath": "C:\\Users\\lukes\\AppData\\Roaming\\SE2Forge\\Projects\\Game Plugins\\RaceDisplay\\RaceDisplay.csproj",
       "packagesPath": "C:\\Users\\lukes\\.nuget\\packages\\",
-      "outputPath": "F:\\Documents\\games\\Space engineers 2\\Plugins\\RaceDisplay\\obj\\",
+      "outputPath": "C:\\Users\\lukes\\AppData\\Roaming\\SE2Forge\\Projects\\Game Plugins\\RaceDisplay\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\lukes\\AppData\\Roaming\\NuGet\\NuGet.Config",

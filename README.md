@@ -1,260 +1,70 @@
-# Race Display (Space Engineers 2 client plugin)
+# Race Display
 
-Place a box in the world (or round a checkpoint structure) and race laps through it. The first pass starts the race, and each pass after that completes a lap. The HUD looks like the game's own SPD panel:
+A Space Engineers 2 client plugin for racing: build a course of gates and checkpoints, race laps against the clock and your own ghost, and show races off with replays and cinematics.
 
-- **Timer panel (top centre):** lap number, current lap time in big digits, and total race time. To its left, your **best lap** on this course; to its right, your **best race** (whole race time) on this course at the current lap count. How to start is shown underneath.
-- **Lap list (left):** every lap time. Your best lap in this race is green, and the others show how much slower they were in grey (`+4.863 vs best`); real penalties are red.
+Everything is set up in game: press **G** and pick the **Racing Display** tab. The full guide is in the game's Help screen (**F1 > Racing Display**), and the **?** beside each section of the menu opens the right part of it.
 
-**HUD drawing:** the panels use the game's own UI system (Avalonia, the same one as the SPD/ALT boxes), so they're properly dark with bright text in the game's font. They hide when you hide the game HUD, and game menus draw over them. If the game UI can't be reached (e.g. after a game update), the plugin falls back to the older debug-draw panels and says why in the log. Set `"UseGameUi": false` to force the fallback.
+## Installing
 
-**Practice laps:** set *Practice laps* on the Settings tab (G > Racing Display). The first pass through the gate starts practice. Each practice lap is timed, with penalties, but isn't added to the lap list. The timer panel reads `PRACTICE 1 / 2`. When you complete the last practice lap at the gate, the race starts on that same pass with **GO!** and lap L1. Practice laps don't count towards the race total or your best times.
+**With SE2 Forge:** put the `RaceDisplay` folder (holding `RaceDisplay.dll` and `0Harmony.dll`) in `%AppData%\SE2Forge\Load\Game Plugins\`, tick Race Display on the Game tab and press Launch.
 
-**Ghost, racing line and sectors:**
-- **Ghost:** once you've set a best lap, a see-through ghost of the ship that set it flies the lap alongside you (same heading and roll), with your gap to it. Turn "Ghost as ship projection" off for a small purple diamond instead.
-- **Crash detection:** by default a crash is the game's own collision damage to your ship (Settings > Penalties > Crash detection: Hull damage / Speed drop / Either, and Crash damage needed). Works in single player and when hosting; elsewhere it uses the speed drop.
-- **Ship analyser** (Race tab > Open; Esc leaves it, the race HUD is hidden meanwhile): look at a grid to see its mass, size, PCU, thrust and acceleration each way, gyros, power and hydrogen (generated and stored), cargo and centre of mass (drawn on it with thrust arrows). Left click keeps one, right click compares another.
-- **RPI classes** (RPI tab > RPI designer): make, duplicate, export / import and copy / paste classes with a budget, minimum weight and lighter-ship weight steps; give any block in the game a cost straight in the list (one row per block, sizes side by side, with icons, search, category filter and sorting), limit or ban blocks, see block stats, and check the last analysed ship live. The Ship analyser shows each ship's total RPI against the budget, broken block limits and what the total is made of.
-- **Lap playback:** after a race the Race Map plays the lap back: the line draws in with the time, checkpoints turn green / red as flown / missed, crashes appear as they happened; Replay lap plays it again.
-- **Race Map:** sectors along the racing line, gate bars (chequered start / finish), your lap coloured green / red where it gained / lost on the record, softer off-line bands, scale bar, north arrow, height profile, a key, hover details, and zoom (wheel) / drag / double-click reset.
-- **Possible lap line:** Race tab > Possible lap (best sectors) races your best sectors joined into one lap (ghost, racing line and live gap). Sectors flown from this version on keep their path.
-- **Results laps:** Shift+[ / Shift+] step the results graphs and map through the best lap and each lap. The map shows the lap's path, missed checkpoints in red and a red X at each crash.
-- **Flight aids:** speedometer (with Race HUD only by default), the game's gyro kept with Race HUD only (optionally target based), a flight keys display (Q W E A S D C Space) in a bottom corner, and a speed vector marker where the ship is actually heading. All in Settings > HUD.
-- **Records:** Race button on each ship; deleting the ship with the course best lap hands it to the next fastest ship.
-- **F1 > Racing Display > How it's worked out:** how the gaps, possible lap, time at top speed, consistency, G-forces, penalties and graphs are calculated.
-- **Racing line:** a faint purple line through the world along your best lap's path (near you only).
-- **Sectors:** the splits panel has a SECTOR column (time from the previous checkpoint): purple for the best ever, green for the best this race. After the finish the table shows sector times per lap (switchable back to lap times on the Settings tab).
-- **Racing line:** smooth curves through corners; red BRAKE / green GO markers where the best lap braked hard and sped up again (with speeds); thickness, opacity and draw distance in Settings > Ghost and racing line.
-- **Race Map after the race:** your best lap of the race (orange) over the course record from before it (purple), with red bands where your line was 25 m+ away from it.
-- **Graphs:** the results swap every 5 s (Settings > Panels, 0 = speed only) between speed round the lap (your best lap this race against the course record from before the race, shaded green where faster and red where slower) and the time gap round the lap (above the line = ahead, below = behind, scale in seconds). Lines labelled CP n mark the checkpoints, red if missed.
-- **Stats:** "Without penalties" time and a VS BEST column in the sectors table (each sector's best this race against the course best before it).
+**By hand:**
 
-**Race stats:** after the finish the splits panel adds G MAX, G AVG, BRAKE and DIST rows per lap, and a separate RACE STATS box in the top corner (Settings > Panels > Race stats) (ship, vs ship best, distance, max/avg turn G, max braking, time near top speed, average lap, consistency).
+1. Copy **`RaceDisplay.dll`** and **`0Harmony.dll`** into one folder.
+2. In Steam, right-click **Space Engineers 2 > Properties > Launch Options** and add `-plugins:` followed by the full path to `RaceDisplay.dll`. Several plugins: separate them with `;`. Avoid spaces in the path (or put quotes round the whole option).
+3. Start the game. If the path is wrong the game says so and closes: check the path.
 
-**Ship comparison:** each finished race saves best lap / best race times for the ship you flew (by grid name). Records tab > Ships on this course lists them fastest first with the gap, top speed and max turn G, and a Delete button per ship. The race history also shows which ship set each time.
+## Getting started
 
-**Results: overall or this ship:** Ctrl+B switches the race results between the course best (any ship) and the best in the ship you flew (headline, best lap colour, possible lap from that ship's sectors, graph against that ship's best lap). Also Settings > Panels > Results against this ship.
+1. **Ctrl+F** turns on course edit mode. Aim at a ring you've built and left click: it becomes the start / finish gate.
+2. Hold **Shift+R**, pick **Checkpoint**, and left click each checkpoint ring in order. **Ctrl+F** again when you're done.
+3. Fly through the start gate to start the race. Save the game to keep the course with the world.
 
-**Ship replays:** Records tab > Ships on this course > **Watch** replays that ship's best lap (recorded from this version on).
+No rings built? **Shift+T** in edit mode changes the placement to **In the air**: gates and checkpoints are placed in open air ahead of you, as rings or squares, and are drawn in the world for you to fly through (arrows run through them the way to fly, and the next one has guide rails leading in).
 
-**Ghost files (share your line):** Records tab > Ghost files. **Export** (course best, or per ship) writes a `.rdghost.json` file to `%AppData%\SpaceEngineers2\AppData\RaceDisplay\Ghosts` (Open folder button). Copy other players' files into that folder and press Reload; each listed ghost can be **Watched** (spectator replay) or **Raced** against (the ghost, racing line and live gap follow it). Set a pilot name to have it on your exports. A ghost only fits the course it was flown on: same world position of the start gate (within 50 m) and the same number of checkpoints.
+## Keys
 
-**Courses are kept in each world's save:** the course, the courses saved on the Courses tab, and which way round it's flown are kept only in the world they were made in, in `RaceDisplayCourses.json` in that world's save folder. They are not stored in `RaceDisplay.json` (which keeps your settings, keys and records), so a course never turns up in another world, even one with the same name. The file is written every time the game saves the world (Save from the menu, or an autosave), a couple of seconds after the save; if you leave without saving, course changes since the last save are lost, like the rest of the world. Save As takes the course to the new save. Courses tab > **Save to world** writes it straight away; **Back to the saved course** puts back the one from the last save. Publish the world and players with the plugin get the course set up automatically. The save folder is found from the game's session objects or by searching `%AppData%\SpaceEngineers2` for a folder named after the world; the log says which folder was used.
-
-**Course edit mode:** Ctrl+F (or Courses tab > Course edit mode). Racing stops; the timer box shows the tool, and the game's debug draw is switched on so the gate and checkpoint boxes show (put back as it was when you leave). Aim at a grid (it's outlined) and **left click** to make it the start/finish gate or the next checkpoint (fitted to its ring opening); **right click** a gate/checkpoint to remove it. Hold **Shift+R** for the tool wheel (Start / Finish gate, Start gate, Finish gate, Checkpoint; the current one is tinted in its colour): it's the game's own radial menu (like the paint gun's), so the cursor shows and the view stays still; point at a tool and let go of the key (or click it); Esc or a click outside cancels. Edits are written into the world save too when that's on. A separate **finish gate** makes a point-to-point (sprint) course: the race starts at the start gate and ends at the finish gate, one run (lap count and practice laps don't apply); Start / Finish gate turns it back into a circuit. **Placement mode** (**Shift+T**, shown at the top of the timer panel) cycles On a grid, Pick blocks and In the air. **Pick blocks** sets a gate or checkpoint like the game's partial copy: left click one corner block, then the opposite corner block on the same grid; the box between them (both blocks included, lined up with the grid) becomes the gate or checkpoint. The box is outlined as you aim (yellow once the first corner is set), and right click clears the first corner. **One ring, two checkpoints:** for a course that comes back through the same ring the other way, click a ring that's already a checkpoint and then click it again: it's added once more as the next checkpoint. Each pass through it counts as the next of its checkpoints in order, and it shows one marker with both numbers (CP 2 / 5). Ctrl+F turns edit mode off.
-
-**Seeing the course while editing:** gates and checkpoints are always outlined in edit mode (no debug draw needed), and white lines join them in flying order with arrows showing the way round and each leg's length. A **COURSE** panel lists the course type, straight-line length (and race length for laps), each leg, your best lap, and warnings: no start gate, checkpoints under 25 m apart, or a ring turned side-on to the way you arrive. **Shift+L** (or Settings > Course editing > Best lap line in edit mode) shows or hides your best lap's line while editing.
-
-**Gates and checkpoints in the air:** set the placement mode to **In the air** (Shift+T) and every tool places in open air instead of on a grid: left click puts the start / finish gate, start gate, finish gate or next checkpoint as a square ring ahead of you along your view (Air gate distance, default 40 m), facing the way you look. The outline shows where it will go. The grow / shrink keys change its size (Air gate size, default 30 m). Right click removes them like any other. Press Shift+T to go on to Pick blocks and back to On a grid.
-
-**Reverse course:** Courses tab > **Reverse**, or **Ctrl+Shift+I** in edit mode. The checkpoints go in the opposite order (the last becomes CP 1), every gate is turned round, and on a point-to-point course the start and finish swap. The reversed course has its own best times, ghost and records; reversing it again brings the original's back. Saved courses and the world save remember which way round they are.
-
-**Undo / redo:** **Ctrl+U** undoes the last course edit in edit mode (placing, removing, resizing), **Ctrl+Shift+U** redoes it; up to 100 steps, kept while the game runs. (Not Ctrl+Z, which the game uses to undo building.)
-
-**Best-lap replay:** Records tab > **Watch best lap**, or Ctrl+Shift+L. When you close the menu, the game's spectator camera follows the ghost of your ship round your best lap at real speed, with a REPLAY timer. It puts you back in your seat at the end, or press Ctrl+Shift+L again to stop early. Racing is paused while it plays.
-
-**Replay camera:** by default the camera orbits: it circles the ghost and always aims at it while moving with it. Move the mouse (or A/D, up/down) to swing round it, and W/S to zoom in and out (3 to 500 m). **Ctrl+Shift+C** switches to a fixed chase camera behind the ghost and back (Settings > Replay > Orbit camera keeps the choice).
-
-**Leaving a replay:** press **Esc** (the pause menu doesn't open) or the replay key.
-
-**Cinematic camera:** replays switch on the game's cinematic spectator (from the Hostile Encounters update): camera movement is smooth and eased, and the cinematic look-around keys turn the view away from the ghost while it keeps tracking. If you lock the cinematic camera onto a real ship or player with the game's own lock key, the game drives the camera until you unlock it. Your own cinematic setting is put back when the replay ends. Turn it off in Settings > Replay > Cinematic camera.
-
-**Sector colours:** the checkpoint dots under the timer take the colour of each sector as you fly it, like F1 timing: purple = fastest ever on this course, green = your best this race, yellow = slower (also in the splits). Settings > Minimap > Sector colours.
-
-**Racing line colours:** Settings > Ghost and racing line > Racing line colours. **Speed**: the best lap's line is red where it was flown slowly, through yellow, to green where it was fastest. **Braking**: red where the lap was slowing down (the harder, the redder), green where it was speeding up, white where it held its speed, so you can see where it braked and how early it got back on the power. **Plain**: magenta.
-
-**Settings tab layout:** settings are grouped as Race, HUD, Panels, Markers, Minimap, Ghost and racing line, Penalties, Replay, Course editing and Advanced (crash detection and timing fine-tuning, folded away at first). Click a section's title to fold it away or open it (remembered). A setting that only matters when another one is on is greyed out while that one is off, and an orange dot marks every setting that isn't at its default. The search box looks in folded sections too.
-
-**Small extras:** Shift+M in edit mode moves a checkpoint (aim at it, press Shift+M, left click its new place; it keeps its number; right click cancels). Saved courses have a **Rename** button (type the new name in Save as first). Records tab: **Copy last race**, or click any race, copies it as a line of text for Discord. Each setting that isn't at its default has a **Reset** button.
-
-**Settings presets:** at the top of the Settings tab, type a name (e.g. *Testing* or *Race day*) and press **Save** to keep every Settings-tab value (laps included) as a preset; pick one and press **Load** to switch to it, or **Delete**. Keys, records and courses aren't part of a preset. Presets are kept in `RaceDisplayPresets.json` next to `RaceDisplay.json`. To share one, pick it and press **Export**: it's written to a `.racepreset.json` file in the `Presets` folder next to it (**Open folder** opens it). To use someone else's, copy their file into that folder and press **Import** next to it in the list.
-
-**HUD layout:** Settings > HUD > HUD layout: **Centre** (default: timer top centre with best lap and best race beside it, minimap and lap list on the left, splits on the right), **Left** or **Right** (the timer in that top corner with the lap list under it; the minimap in the other corner with best race and best lap beside it and the splits, and race results, under them).
-
-**Only the next checkpoints:** Settings > Markers > Only mark the next checkpoints (off by default) puts markers on just the next few checkpoints, plus the gate once it's among them, instead of the whole course. Checkpoints marked ahead sets how many (1 to 10, default 3). Edit mode and replays always show them all.
-
-**Minimap:** a small round map of the course in the top left corner (top right with HUD layout Left). The course is fitted inside the circle. It shows the whole course by default; with **Minimap zooms in while moving** on (Settings > Minimap, off by default) it's zoomed in from 20 m/s and follows you (Minimap zoom while moving, default 2 km across), and below 20 m/s it gradually zooms back out, to the whole course at 4 m/s. The next checkpoint has a pulsing ring and a faint dashed line from you to it; missed checkpoints turn red. There is a label by each gate and checkpoint (S/F or START / FINISH, then 1, 2, 3...); its racing line uses the racing line colours: the route between the gates and checkpoints (dashed; the next checkpoint orange, flown ones green, the start gate cyan, a finish gate purple), the best lap's line, you (the arrow, turning with your ship) and the ghosts (purple, and orange for a 2nd ghost). The start gate faces up the map. Settings > Minimap.
-
-**Race Map:** G (the terminal) > Map > **Race Map** shows the minimap's view of the whole course as big as the page: the route, the racing line in its colours, each gate and checkpoint with its label (the next one ringed), you and the ghosts. It updates live while it's open. Switches above the map show or hide the sectors, checkpoints, their labels, the route, the racing line, the ghosts and you (remembered in `RaceMap.json`).
-
-**Named sectors:** G > Racing Display > Courses > Sectors: pick where a sector starts and ends (the gate, then the checkpoints in order), give it a name ("Canyon run") and press Add. Each sector shows on the minimap and the Race Map as a wide coloured band along the route with its name. They're saved with the course in the world (when the game saves), go with named courses, and turn round with Reverse course.
-
-**2nd ghost:** Records tab > **2nd ghost** on a ship's row (its best lap) or on a ghost file adds a second, orange ghost that flies at the same time as the main one, in races and in replays. Its racing line is drawn too, in orange; while a 2nd ghost is on, the main line is purple (instead of speed colours) so the two lines are easy to tell apart. Press it again (shows "2nd: on") to turn it off; it's cleared when the course changes.
-
-**Courses tab** (G > Racing Display > Courses):
-- **Save / load:** give the current course a name and save it; load or delete saved courses for this world.
-- **Checkpoint order:** move any checkpoint up or down, or delete a single one.
-- **Auto-build:** finds grids, or antennas on them, named `Start` / `Finish` / `Start/Finish` and `CP1`, `CP 2`, `Checkpoint 3` or just `4`, and builds the course in number order, fitted to their rings.
-- **Antennas:** switch every antenna in the world off (their HUD markers disappear) or back on.
-
-**Display features:**
-- **Live gap:** the gap under the timer compares you with your best lap continuously (green = ahead, red = behind), using the path of your best lap. It needs one recorded best lap on the course first; until then it updates at each checkpoint.
-- **Checkpoint labels and arrow:** each checkpoint and the gate get a HUD label at their place on screen. The one you're heading for is bigger and shows its distance. When it's off screen or behind you, an arrow at the screen edge points to it.
-- **Missed checkpoint warning:** fly through a checkpoint after skipping one and you get a red **MISSED CP 3! +5s** straight away. The skipped checkpoint's dot turns into a red ring and its split shows MISSED.
-- **F1 timing colours:** in the splits, **purple** is the best ever on this course, **green** is the best in this race, and white is slower. The final table also has TOP and AVG speed rows.
-- **Possible lap:** your best sector times added up, shown under BEST LAP and in the results.
-- **Results** now sit under the lap list, out of the way of the crosshair. They include possible lap and top/average speed.
-- **Lap list penalties** are short (`+10s`), with a red ring per missed checkpoint and a red cross per crash.
-- **Records tab** (G > Racing Display): your best 5 races per lap count on this course, with total, best lap, penalties, top speed and date. The reset buttons are here too.
-- **Panels:** on the Settings tab you can hide the lap list, the splits or the best boxes, choose the HUD layout (Centre, Left or Right), and turn the checkpoint labels/arrow and the sounds on or off.
-- **Sounds:** beeps for the countdown, GO, checkpoints, laps, missed checkpoints, crashes, new best laps and new records. They use the game's UI sounds. Other game sound events can be set in `RaceDisplay.json` (`SoundCountdown`, `SoundGo`, `SoundCheckpoint`, `SoundLap`, `SoundBest`, `SoundMissed`).
-
-**Race HUD extras:**
-- **Live gap:** at each checkpoint, and at the end of each lap, the timer panel shows the gap to your best lap on this course, e.g. `-1.204` in green (ahead) or `+0.380` in red (behind).
-- **Splits panel (right):** your time at each checkpoint this lap, with the gap to your best lap's split. After the finish it becomes a table of every lap's time at each checkpoint (last 5 laps), with the fastest time at each checkpoint in green, missed ones as a red `--`, and a LAP row with each lap's time.
-- **Progress dots:** one dot per checkpoint under the lap time. Green = hit, orange = next, grey = still to come.
-- **Next checkpoint:** during a race, the next checkpoint (lowest number not yet hit) has a bigger, brighter marker with its distance; the others are dimmed. Checkpoints still count in any order.
-- **Countdown start:** stop your ship within 50 m of the start gate (`CountdownDistance`) and hold still for a second, and you get 3-2-1-GO. GO is your signal to launch; the timer starts when you fly through the gate. Moving before GO cancels the countdown. After a race, fly away from the gate area before you can count down again. You can always skip the countdown and just fly through the gate.
-- **Results panel:** at the finish, the total time, best lap and penalties, plus your record for this course and lap count (`NEW RECORD!` when you beat it). It fades out after 10 seconds (`ResultsSeconds`).
-- **Effects:** messages fade in and out; the timer border flashes green on a best lap and red on a penalty.
-
-Records (best lap, splits, best race per lap count) are kept per **course**: the world, the number of checkpoints, and where the start gate is. Change the course and the records start fresh. Records tab > Reset clears the current course's records.
-
-**Fitting rings and arches:** when you place a gate or checkpoint round a grid, the plugin looks at the grid's blocks for an enclosed hole (the opening of a ring, arch or frame). If it finds one, the box fits just that opening, and legs, posts and supports are ignored, so only flying through the hole counts. Grids with no enclosed hole get a box round the whole grid as before. Set `"FitToOpening": false` to always use the whole grid.
-
-**Markers:** every checkpoint has a diamond marker with a small `CP 3` label underneath, orange until you've flown through it this lap and green after. The start/finish gate has a cyan `START / FINISH` marker. Only the place you're heading shows its distance: the nearest checkpoint still to fly through during a race, or the start/finish gate before a race and after the last checkpoint. Markers show through terrain, without debug draw, and with the HUD hidden. They stay the same size on screen at any distance (`MarkerSize` in the settings file). Ctrl+N turns them off.
-
-**Gate and checkpoint outlines** only show when the game's debug draw is on, so turn it on while you build a course and off to race. The timer and lap panels always show.
-
-**Race messages** (GO!, checkpoints, crashes, lap times) drop down in a tab under the timer. If the left column (minimap, lap list and results) is taller than the screen, it's scaled down to fit. Setup messages (gate placed, etc.) appear in the centre.
-
-## Controls
-
-Press **G** (the terminal screen) and pick the **Racing Display** tab after Map; **Shift+J** opens it on its Race page (once you've opened the terminal with G in this session). If the terminal tab can't be added (game update), it falls back to a Racing Display button in the Esc pause menu. It opens a screen laid out like the game's Settings, with Race, Records, Courses, Settings and Controls tabs. **Race** (also opened with **Shift+J**) sets the laps and practice laps and picks whose lap you race against: your course best, any ship's best lap on this course, or a ghost file. The ghost, racing line and live gap follow it. The other tabs:
-
-- **Controls:** click a shortcut, then press the new key combination (hold Ctrl / Shift / Alt with it if you want them). Esc, or clicking it again, cancels. **Default** next to a changed shortcut puts it back.
-- **Settings:** sliders and switches for missed-checkpoint and crash penalties, crash sensitivity, the countdown distance and hold time, laps per race, gate fitting, markers, HUD size, panel darkness and more. Point at a setting to see what it does; the search box at the top finds settings by name or description. Changes apply straight away and are saved.
-
-**Reset to default** resets the tab you're on.
-
-**Guide:** press **F1** (the game's Help screen) and pick **Racing Display**, under Controls. Its own page has a search box over the whole guide; listed after it are topics for Getting started, Building courses, Timer and colours, Penalties, HUD and markers, Minimap and Race Map, Ghosts and replays, Results and records, and Menu, settings and keys. (If the Help screen can't be extended, the guide shows as an Info tab in the Racing Display menu instead.)
-
-A key used by two actions shows in red, a changed key in yellow. Your bindings are saved in `RaceDisplay.json` (`KeyBindings`).
-
-Defaults:
-
-| Keys | Action |
+| Key | What it does |
 |---|---|
-| **Ctrl+F** | Course edit mode on/off (aim + left click to set a gate or checkpoint, right click to remove) |
-| **Shift+R** (hold, in edit mode) | Tool wheel: Start/Finish, Start gate, Finish gate, Checkpoint |
-| **Shift+T** (edit mode) | Placement mode: on a grid / pick blocks / in the air |
-| **Shift+L** (edit mode) | Show or hide the best lap line while editing |
-| **Ctrl+U** / **Ctrl+Shift+U** (edit mode) | Undo / redo course edits |
-| **Ctrl+Shift+I** (edit mode) | Reverse the course |
-| **Ctrl+]** / **Ctrl+[** (edit mode) | Make the start gate 25% bigger / smaller |
-| **Ctrl+R** | Stop and reset the race (outside edit mode). With Settings > Race > Reset race teleports to the start on, it also moves your ship back behind the start gate (or to the start spot set with Ctrl+T or Courses tab > Start spot > Set here) and stops it |
-| **Ctrl+T** | Set the start spot (where Ctrl+R teleports you) to where your seat is now, facing the way you're facing |
-| **Shift+J** | Race setup: opens the Racing Display menu on its Race tab (laps, practice laps, whose lap the ghost and racing line follow). |
-| **U** (the game's HUD key) | Cycles full HUD, minimal, **race HUD only** (the game's own HUD hidden: speed / altitude, toolbar, character status, hints, notifications; only the race HUD shows), then no HUD. Also Settings > HUD > Race HUD only. |
-| **Ctrl+B** | Results against the course best / this ship's best |
-| **Ctrl+Shift+L** | Watch the best-lap replay |
-| **Ctrl+Shift+C** | During a replay: orbit / chase camera |
-| **Ctrl+N** | Checkpoint and gate markers on/off |
+| G | The menu (Racing Display tab) |
+| Shift+J | The menu's Race page (laps, ghosts, spotlight) |
+| Ctrl+R | Reset the race |
+| Ctrl+F | Course edit mode |
+| Shift+R (hold) | Edit mode tool wheel |
+| Shift+T | Edit mode placement: on a grid / pick blocks / in the air |
+| Ctrl+] / Ctrl+[ | Air gate bigger / smaller |
+| Alt+] / Alt+[ | Air gate taller / shorter |
+| Alt+= / Alt+- | Air gate further ahead / nearer |
+| Shift+O | Air gate: ring / square |
+| Ctrl+Shift+L | Watch your best lap |
+| Ctrl+Shift+O | Orbit camera |
+| Ctrl+Shift+P | Play / stop the cinematic |
+| Ctrl+Shift+' | Autopilot |
+| Esc | Leave a replay, camera or spotlight |
 
-## HUD settings
+Every key can be changed on the menu's **Controls** tab.
 
-In `%AppData%\SpaceEngineers2\AppData\RaceDisplay\RaceDisplay.json`:
+## How things look
 
-| Setting | Default | What it does |
-|---|---|---|
-| `FitToOpening` | true | Fit gates/checkpoints to the hole in a ring or arch instead of the whole grid |
-| `ShowMarkers` | true | Checkpoint/gate markers (Ctrl+N toggles) |
-| `MarkerSize` | 0.03 | Marker size as a share of the distance to it |
-| `UseGameUi` | true | Draw the HUD with the game's real UI. False = debug-draw panels |
-| `HudScale` | 1.0 | Overall size of the panels and text |
-| `FontHeightPx` | 22 | (Debug-draw fallback only) line height used for the layout |
-| `BackgroundOpacity` | 210 | Panel darkness, 0 (clear) to 255 (solid black). With the game UI the text stays bright at any value |
-| `MaxLapRows` | 10 | Laps shown before the list scrolls |
-| `LapTarget` | 0 | Laps per race (0 = unlimited) |
-| `PenaltySeconds` | 5 | Seconds added to a lap for each checkpoint missed |
-| `CrashPenaltySeconds` | 5 | Seconds added per crash |
-| `CrashImmunitySeconds` | 5 | After a crash penalty, no further crash penalty for this many seconds (0 = off) |
-| `CrashImmuneUntilSpeed` | off | After a crash penalty, no further crash penalty until you're back above `CrashRearmSpeed` |
-| `CrashRearmSpeed` | 25 | Speed (m/s) to get back above before a crash counts again |
-| `CrashMinSpeed` | 20 | Only crashes at or above this speed (m/s) count |
-| `CrashDeceleration` | 20 | How sudden the stop must be (m/s²). Raise it if hard braking counts as a crash, lower it if crashes are missed |
-| `CrashMinSpeedLoss` | 8 | Minimum speed lost in the impact (m/s), so scrapes don't count |
-| `CrashMinSpeedLossFraction` | 0.25 | The impact must also take away this share of your speed (0.25 = 25%) |
-| `ResultsSeconds` | 10 | How long the results panel stays up after the finish |
-| `CountdownDistance` | 50 | How close to the start gate (m) you must stop for the countdown |
-| `CountdownHoldSeconds` | 1 | How long to hold still near the gate before the countdown starts (0 = no countdown) |
-| `RearmDistance` | 30 | Metres you must fly away from the gate before the next pass counts as a lap |
+- **Air gates**: Settings > Course editing > Air gate look picks Lines, Glow or Glow (game 3D UI), which draws through the layer the game uses for its build previews.
+- **Gates on grids**: Courses tab > This course > Grid checkpoint glow decides whether a course's built gates get the glowing frame as well (saved with the course).
+- **Markers**: Settings > Markers > Marker icon picks a ring, diamond, chevron or beacon.
+- **Gravity and lights**: a gravity panel with direction arrows sits in the bottom right corner (Settings > HUD > Gravity indicator), and a lamp on the speedometer shows while the ship's lights are on.
 
-Edit the file while the game is closed.
+## Settings and presets
 
-## How it works
+Settings are on the menu's **Settings** tab. Two presets come ready made:
+- **Racing**: clean and easy to follow for filmed race days.
+- **Practice**: everything on, to work on your line and your ship.
 
-- **Detection**: each frame the plugin checks the path from the ship's last position to its current one against the box. A fast ship that skips right over a thin box in one frame still counts.
-- **Start/stop**: it only triggers when you *enter* the box, and passes less than 2 seconds apart are ignored, so wobbling on the edge won't stop the clock.
-- **Teleports and respawns** (moving more than 5 km in one frame) are ignored.
-- **Pausing the game** pauses the stopwatch.
-- **Saving**: the gate is saved per world (by world name), along with your best time, in `%AppData%\SpaceEngineers2\AppData\RaceDisplay\RaceDisplay.json`.
+## Files
 
-## Project layout
-
-```
-ClientPlugin/
-  Plugin.cs            Entry point (game's IPlugin): sets up Harmony and the per-frame hook
-  Patches.cs           Harmony patches (per-frame loop, world load and unload)
-  Se2Bridge.cs         Game types: player, grids, input, debug draw
-  GameUiHud.cs         HUD panels built with the game's UI system (Avalonia)
-  Core/                Plain C#, no game references
-    TimingGate.cs      The box: contains-point and path-crosses-box tests
-    LapTimer.cs        Armed → Running → Finished state machine
-    RaceGateController.cs  Keys, HUD layout, gate outline
-    GateSettings.cs    JSON settings and saved gate
-    IGameBridge.cs, Vec3D.cs
-```
-
-## Game hooks used (taken from the game's own DLLs)
-
-| What | Game code used | Copied from |
-|---|---|---|
-| Per-frame update | Harmony postfix on `Keen.VRage.Core.VRageCore.Update(TimeSpan)` | the main app loop, which ticks the scene |
-| Find the loaded world | Harmony postfix on `WorldSessionComponent.Init/InitAsync/Destroy` | — |
-| Local player | `world.OwnedSession.SessionComponents.TryGet<ClientPlayersSessionComponent>().LocalPlayerController` | `ControlledEntityDebugScreen.GetPlayer` |
-| Ship or character | `controller.GetTopControllable().Entity`, and if it has a `SeatComponent`, use `CubeBlockComponent.Grid.Entity` instead | `ControlledEntityDebugScreen.GetControlledEntity` |
-| Position and facing | `EntityTransformFunctions.GetWorldTransform(entity.Data)` → `.Position`, `.Orientation.GetForward()/GetUp()` | same |
-| HUD text | `EngineComponent.FromTag<IDebugDraw>().DebugDraw2D.AddText(...)` (pixel coordinates) | `StatsDebugScreen.Draw`, `AutoTestScenario.DrawMessage` |
-| Gate outline | `IDebugDraw.DebugDraw.AddLine(Vector3D, Vector3D, ColorSRGB, depth, timeout)` | — |
-| Pause | `WorldSessionComponent.Pause.IsPaused` | — |
+Settings, records, history, cinematics and race files are kept in `%AppData%\SpaceEngineers2\AppData\RaceDisplay\`. Courses are kept in each world's save. If something goes wrong, `RaceDisplay.log` there says what happened.
 
 ## Building
 
-You need the .NET 9 SDK. In this folder (the one with the `.csproj`), run:
+The source lives in the SE2 Forge workspace: `%AppData%\SE2Forge\Projects\Game Plugins\RaceDisplay\`, with `RaceDisplay.csproj` and the code in `src\`.
 
-```
-dotnet build -c Release
-```
+Build it with **SE2 Forge**: on the Game tab, tick Race Display and press **Build & Launch** (close the game first: it locks the DLLs). SE2 Forge copies `RaceDisplay.dll` and `0Harmony.dll` to `%AppData%\SE2Forge\Load\Game Plugins\RaceDisplay\`, which is the folder to share. Errors are in its output and in `build.log` next to the `.csproj`.
 
-The build finds Space Engineers 2 itself. It reads Steam's install folder from the registry, then checks every Steam library listed in `steamapps\libraryfolders.vdf`, other drives included, and prints `Space Engineers 2 found: ...`.
-
-If the game isn't installed through Steam, or the search fails, point the build at the game's `Game2` folder (the one with `Game2.Client.dll`) in one of two ways:
-- once per build: `dotnet build -c Release -p:Game2Bin="D:\...\SpaceEngineers2\Game2"`
-- permanently: set a Windows environment variable `SE2_GAME2` to that folder.
-
-The output goes to `bin\Release\`. You need two files from there: **`RaceDisplay.dll`** and **`0Harmony.dll`**. Players don't need any of this: they only copy those two DLLs and add the launch option below.
-
-## Installing (Steam launch option, no Pulsar)
-
-SE2 has a built-in plugin loader (`Keen.VRage.Core.Plugins.PluginHost`).
-
-1. Copy `RaceDisplay.dll` and `0Harmony.dll` into one folder, for example `C:\SE2Plugins\RaceDisplay\`.
-2. In Steam, right-click Space Engineers 2 → Properties → Launch Options, and add:
-   ```
-   -plugins:C:\SE2Plugins\RaceDisplay\RaceDisplay.dll
-   ```
-   - For several plugins, separate them with `;`: `-plugins:C:\a\One.dll;C:\b\Two.dll`
-   - Avoid spaces in the path. If you can't, put quotes round the whole option: `"-plugins:C:\My Plugins\RaceDisplay.dll"`
-3. Start the game. If the path is wrong, the game shows an "incorrect plugin path" message and closes. Check the path, and check the game log for "Plugin NOT loaded".
-
-## If something doesn't work
-
-- **No text appears**: in `Se2Bridge.cs`, change `DrawTimeout` to `TimeSpan.FromMilliseconds(20)`. Debug draws with a zero timeout may be cleared before they're shown.
-- **Text is too small or too big**: change the `* 0.5` in `DrawHudText`.
-- **Ship doesn't trigger the gate**: the tracked point is the grid's origin, which may not be the centre of the ship. Make the gate bigger with Ctrl+].
-- **Shortcut clashes**: change the key codes in `Se2Bridge.PollKeys`.
-- **Gate is shared across worlds**: the world-load patch didn't fire. The plugin falls back to a single "default" world and still works.
-
-**Game options followed:** speeds (results, splits, records, crash messages) use the speed unit set in the game's Options > Interface (m/s, km/h or mph); the crash settings stay in m/s. The race panels' background uses the game's UI background opacity unless you turn off Settings > HUD > Panel darkness: use the game's.
-- **Roll indicator**, **reset teleport exit speed**, automatic start spot (10 m before where you last crossed the start), target based gyro reset on teleport, minimap lap replay after a race and a lap picker on the Race Map.
-- **Race spotlight** (Race tab): export a finished race to a file, then in any world pick the file, click the ship and a panel cycles through the race's results, its stats and the ship's stats.
+The build finds Space Engineers 2 through Steam. If it can't, set the `SE2_GAME2` environment variable to the game's `Game2` folder.

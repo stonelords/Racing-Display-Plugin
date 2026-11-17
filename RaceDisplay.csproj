@@ -4,6 +4,7 @@
     <TargetFramework>net9.0-windows</TargetFramework>
     <AssemblyName>RaceDisplay</AssemblyName>
     <RootNamespace>RaceDisplay</RootNamespace>
+    <Description>Racing: build courses of gates and checkpoints, race laps against the clock and your ghost, replays and cinematics.</Description>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -83,6 +84,11 @@
       <Reference Include="@(_GameDll)" Private="false" />
     </ItemGroup>
   </Target>
+
+  <!-- Sounds the game doesn't have, built into the DLL (played by WavPlayer). -->
+  <ItemGroup>
+    <EmbeddedResource Include="src\Sounds\*.wav" LogicalName="RaceDisplay.Sounds.%(Filename)%(Extension)" />
+  </ItemGroup>
 
   <!-- Harmony (supports .NET 9). 0Harmony.dll is copied next to RaceDisplay.dll;
        keep the two together, because the game loads it from the plugin's folder. -->
